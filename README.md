@@ -579,7 +579,8 @@ und für den Chrome Web Store unproblematisch; entscheidend ist, dass der Code
 **lokal mitgeliefert** und nichts zur Laufzeit nachgeladen wird — das ist erfüllt.
 Der Lizenzkopf bleibt im Bundle erhalten (`legalComments: 'inline'`).
 
-Eigener Code: MIT.
+Eigener Code: MIT, siehe [LICENSE](LICENSE). Die Lizenztexte des mitgelieferten Drittcodes
+schreibt der Build nach `dist/THIRD_PARTY_LICENSES.txt`.
 
 ---
 
