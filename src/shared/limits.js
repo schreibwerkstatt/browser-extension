@@ -11,9 +11,15 @@
  *    mit Express' Default: `413` **ohne** `error_code`, als HTML. Deshalb pruefen
  *    wir die Groesse vor dem Request — `validateBinarySize`, `jsonByteLength`.
  *
- * Eine Ausnahme von „kuerzen statt ablehnen" ist Absicht und steht in CLAUDE.md:
- * der Wortlaut eines markierten Zitats wird nie beschnitten, sondern im
- * Grenzfall sichtbar abgelehnt.
+ * Zwei Ausnahmen von „kuerzen statt ablehnen":
+ *
+ *  - **Adressen kuerzt niemand.** Seit Vertrag api 6 lehnt der Server eine URL
+ *    ueber `URL_MAX` oder ohne http(s) mit `400 INVALID_URL` ab — den ganzen
+ *    Request, nicht nur die eine URL. Eine abgeschnittene Adresse zeigt
+ *    woandershin; frueher hat dieser Client sie trotzdem gekuerzt. Jetzt prueft
+ *    `validateUrls` vorher und lehnt sichtbar ab.
+ *  - **Wortlauttreue** (CLAUDE.md): der Text eines markierten Zitats wird nie
+ *    beschnitten, sondern im Grenzfall sichtbar abgelehnt.
  */
 
 export const LIMITS = Object.freeze({
@@ -23,6 +29,7 @@ export const LIMITS = Object.freeze({
   SOURCE_MAX: 1000,
   TAG_MAX: 60,
   TAGS_MAX: 20,
+  /** Laenger wird nicht gekuerzt, sondern abgelehnt (`INVALID_URL`, `params.max`). */
   URL_MAX: 2000,
   URLS_MAX: 20,
   URL_LABEL_MAX: 300,
@@ -97,6 +104,9 @@ export const CSL_TYPES = Object.freeze([
   'book',
   'chapter',
   'article',
+  // Zeitungs- und Zeitschriftenartikel; seit dem Server-Release v4.14.0 im
+  // Vertrag. Ein aelterer Server antwortet `INVALID_VALUE` mit `allowed`.
+  'newspaper',
   'website',
   'thesis',
   'report',
@@ -135,7 +145,18 @@ const hasText = (v) => typeof v === 'string' && v.trim().length > 0;
  */
 function cut(value, max) {
   const text = typeof value === 'string' ? value : '';
-  return text.length > max ? text.slice(0, max) : text;
+  if (text.length <= max) return text;
+  // Endet der Schnitt mitten in einem Surrogatpaar (Emoji), eine Einheit
+  // frueher schneiden. Der Server sieht dann einen Text innerhalb der Grenze
+  // und schneidet selbst nicht mehr — statt eines halben Zeichens, das in
+  // App und Datenbank als „�" erscheint. Die Laenge bleibt ≤ `max`.
+  const end = isHighSurrogate(text.charCodeAt(max - 1)) ? max - 1 : max;
+  return text.slice(0, end);
+}
+
+/** @param {number} code */
+function isHighSurrogate(code) {
+  return code >= 0xd800 && code <= 0xdbff;
 }
 
 /**
@@ -188,16 +209,10 @@ export function clampResearchPayload(payload = {}, { verbatimBody = false } = {}
     if (urls.length > LIMITS.URLS_MAX) {
       truncations.push({ field: 'urls', max: LIMITS.URLS_MAX, actual: urls.length });
     }
-    const kept = urls.slice(0, LIMITS.URLS_MAX);
-    if (kept.some((entry) => entry.url.length > LIMITS.URL_MAX)) {
-      truncations.push({
-        field: 'urls',
-        max: LIMITS.URL_MAX,
-        actual: Math.max(...kept.map((entry) => entry.url.length)),
-      });
-    }
-    next.urls = kept.map((entry) => ({
-      url: cut(entry.url, LIMITS.URL_MAX),
+    // Die Adresse selbst bleibt unangetastet — zu lang lehnt `validateUrls`
+    // ab. Nur die Bezeichnung kuerzt der Server still.
+    next.urls = urls.slice(0, LIMITS.URLS_MAX).map((entry) => ({
+      url: entry.url,
       label: cut(entry.label || '', LIMITS.URL_LABEL_MAX),
     }));
   }
@@ -206,9 +221,10 @@ export function clampResearchPayload(payload = {}, { verbatimBody = false } = {}
 }
 
 /**
- * Kuerzt eine `POST /sources`-Payload. Nur `title` und `url` haben eine
- * dokumentierte Grenze — `container_title`, `publisher`, `place` und `note`
- * bekommen ausdruecklich KEINE erfundene.
+ * Kuerzt eine `POST /sources`-Payload. Nur `title` hat eine dokumentierte
+ * Grenze, die der Server still anwendet — `container_title`, `publisher`,
+ * `place` und `note` bekommen ausdruecklich KEINE erfundene. Die `url` wird nie
+ * gekuerzt (siehe Kopf dieses Moduls).
  *
  * @param {Record<string, any>} payload
  * @returns {{ payload: Record<string, any>, truncations: Truncation[] }}
@@ -218,14 +234,10 @@ export function clampSourcePayload(payload = {}) {
   /** @type {Truncation[]} */
   const truncations = [];
 
-  for (const [field, max] of [
-    ['title', LIMITS.TITLE_MAX],
-    ['url', LIMITS.URL_MAX],
-  ]) {
-    const value = next[field];
-    if (typeof value !== 'string' || value.length <= Number(max)) continue;
-    truncations.push({ field: String(field), max: Number(max), actual: value.length });
-    next[field] = cut(value, Number(max));
+  const title = next.title;
+  if (typeof title === 'string' && title.length > LIMITS.TITLE_MAX) {
+    truncations.push({ field: 'title', max: LIMITS.TITLE_MAX, actual: title.length });
+    next.title = cut(title, LIMITS.TITLE_MAX);
   }
 
   return { payload: next, truncations };
@@ -275,11 +287,48 @@ export function jsonByteLength(payload) {
 }
 
 /**
+ * Prueft die Adressen einer Payload — `url` (`POST /capture`) und `urls[]`
+ * (`POST /research`) — so, wie der Server sie seit Vertrag api 6 prueft:
+ * http(s) und hoechstens `URL_MAX` Zeichen, sonst `400 INVALID_URL` fuer den
+ * ganzen Request. Gekuerzt wird nie; eine abgeschnittene Adresse zeigt
+ * woandershin.
+ *
+ * `POST /sources` kennt keine Laengengrenze fuer `url` — deshalb steckt diese
+ * Pruefung nicht in `validateSourcePayload`, sondern wird fuer `/capture`
+ * eigens aufgerufen.
+ *
+ * @param {Record<string, any>} payload
+ * @returns {ValidationProblem[]}
+ */
+export function validateUrls(payload = {}) {
+  /** @type {ValidationProblem[]} */
+  const problems = [];
+  const candidates = [
+    ...(hasText(payload.url) ? [{ field: 'url', value: payload.url.trim() }] : []),
+    ...(Array.isArray(payload.urls) ? payload.urls : [])
+      .filter((entry) => entry && hasText(entry.url))
+      .map((entry) => ({ field: 'urls', value: entry.url.trim() })),
+  ];
+  for (const { field, value } of candidates) {
+    if (!/^https?:\/\//i.test(value)) {
+      problems.push({ field, key: 'validation_url_scheme' });
+    } else if (value.length > LIMITS.URL_MAX) {
+      problems.push({
+        field,
+        key: 'validation_url_too_long',
+        params: { max: LIMITS.URL_MAX, actual: value.length },
+      });
+    }
+  }
+  return problems;
+}
+
+/**
  * Prueft eine `POST /research`-Payload gegen die dokumentierten Grenzen.
  *
  * Was der Server still kuerzt, wird hier NICHT beanstandet — dafuer ist
  * `clampResearchPayload` da. Beanstandet wird nur, was der Server wirklich
- * ablehnt (`EMPTY`, `BOOKID_REQ`, `INVALID_VALUE`), und der Wortlaut eines
+ * ablehnt (`EMPTY`, `BOOKID_REQ`, `INVALID_URL`), und der Wortlaut eines
  * Zitats, den wir nicht heimlich beschneiden wollen.
  *
  * @param {Record<string, any>} payload
@@ -311,13 +360,17 @@ export function validateResearchPayload(payload = {}, { verbatimBody = false } =
     });
   }
 
-  // Spiegelt EMPTY: mindestens eines von title/body/url muss gesetzt sein.
+  // Spiegelt EMPTY: mindestens eines von title/body/URL muss gesetzt sein.
+  // Als URL zaehlt, was der Server zaehlt — `urls[]` bzw. bei `/capture` `url`,
+  // NICHT das Freitextfeld `source`, auch wenn es bei uns eine Adresse traegt.
   const anyUrl =
-    hasText(payload.source) ||
+    hasText(payload.url) ||
     (Array.isArray(payload.urls) && payload.urls.some((u) => hasText(u && u.url)));
   if (!hasText(title) && !hasText(body) && !anyUrl) {
     problems.push({ field: 'title', key: 'validation_research_empty' });
   }
+
+  problems.push(...validateUrls(payload));
 
   return problems;
 }

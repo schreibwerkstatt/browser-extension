@@ -33,6 +33,17 @@
       <button type="button" id="goto-options-2" class="button" data-i18n="popup_goto_options">Einstellungen öffnen</button>
     </section>
 
+    <!-- Host-Berechtigung fehlt: sonst scheitert jeder Aufruf an CORS -->
+    <section id="host-permission" class="panel panel--error" hidden>
+      <p data-i18n="popup_host_permission_missing">Der Zugriff auf den Server ist nicht erlaubt.</p>
+      <button type="button" id="goto-options-3" class="button" data-i18n="popup_goto_options">Einstellungen öffnen</button>
+    </section>
+
+    <!-- Zustand nicht lesbar — kein Token-Problem, sondern ein eigener Fehler -->
+    <section id="fatal-problem" class="panel panel--error" hidden>
+      <p id="fatal-problem-text"></p>
+    </section>
+
     <!-- Ladezustand -->
     <section id="loading" class="panel">
       <p data-i18n="popup_harvesting">Seite wird ausgewertet …</p>
@@ -217,7 +228,7 @@
 
       <!-- Anhänge -->
       <div class="field field--checks">
-        <label class="check">
+        <label class="check" id="attach-screenshot-row">
           <input type="checkbox" id="attach-screenshot" />
           <span data-i18n="popup_attach_screenshot">Screenshot mitschicken</span>
         </label>

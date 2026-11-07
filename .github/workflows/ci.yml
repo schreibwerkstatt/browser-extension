@@ -5,8 +5,10 @@
 # hier baut nur, was wirklich in Git liegt. Eine vergessene, nicht getrackte
 # Datei ist lokal unsichtbar und faellt genau an dieser Stelle auf.
 #
-# Kein Release-Schritt: das ZIP entsteht ueber `/release` lokal, der Upload in
-# den Chrome Web Store ist ohnehin Handarbeit (store/PUBLISHING.md).
+# Kein Release-Schritt: das ZIP wird hier nur zur Probe gepackt und verworfen,
+# das echte entsteht ueber `/release` lokal; der Upload in den Chrome Web Store
+# laeuft ueber `npm run store:publish` mit Zugangsdaten, die CI nie sieht
+# (store/PUBLISHING.md).
 name: CI
 
 on:
@@ -65,3 +67,11 @@ jobs:
       # Baut nach dist/. Faengt fehlende Importe und nicht getrackte Dateien,
       # die die Tests nicht beruehren.
       - run: npm run build
+
+      # Packt zur Probe (baut dabei erneut, das Skript ist `build && package`).
+      # Laesst die Pruefungen aus tools/package.mjs greifen, die sonst erst
+      # beim Release anschlagen: Versionsgleichstand manifest/package.json,
+      # Store-taugliche Versionsnummer, keine Sourcemaps oder versteckten
+      # Dateien im Paket. Braucht weder Netz noch Geheimnisse; das ZIP wird
+      # nicht hochgeladen und verfaellt mit dem Runner.
+      - run: npm run package

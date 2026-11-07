@@ -31,6 +31,10 @@ const ui = {
   setupNeeded: el('setup-needed'),
   tokenProblem: el('token-problem'),
   tokenProblemText: el('token-problem-text'),
+  hostPermission: el('host-permission'),
+  fatalProblem: el('fatal-problem'),
+  fatalProblemText: el('fatal-problem-text'),
+  attachScreenshotRow: el('attach-screenshot-row'),
   form: el('capture-form'),
   queueChip: el('queue-chip'),
 
@@ -111,6 +115,9 @@ async function init() {
   } else if (context.state.tokenState === TOKEN_STATE.SCOPE_MISSING) {
     showTokenProblem(describeError({ status: 403, code: 'DEVICE_SCOPE_FORBIDDEN' }, t).text);
   }
+  // Nur ein sicherer Befund (`false`) wird gemeldet; `null` heisst „unbekannt".
+  // Erfassen bleibt moeglich — der Auftrag wartet dann in der Warteschlange.
+  if (context.state.hostPermission === false) ui.hostPermission.hidden = false;
 
   fillBooks(context.state.books, context.state.defaultBookId);
 
@@ -330,7 +337,7 @@ function wireEvents() {
   });
   ui.cancel.addEventListener('click', () => window.close());
 
-  for (const id of ['open-options', 'goto-options', 'goto-options-2']) {
+  for (const id of ['open-options', 'goto-options', 'goto-options-2', 'goto-options-3']) {
     const node = document.getElementById(id);
     if (node) node.addEventListener('click', () => chrome.runtime.openOptionsPage());
   }
@@ -339,6 +346,10 @@ function wireEvents() {
 function updateModeVisibility() {
   const mode = currentMode();
   el('research-fields').hidden = mode === 'source';
+  // Der Screenshot haengt am Fundstueck; eine reine Quelle nimmt nur ein PDF.
+  // Sichtbar und angehakt ginge er still verloren.
+  ui.attachScreenshotRow.hidden = mode === 'source';
+  if (mode === 'source') ui.attachScreenshot.checked = false;
   // Bei „Quelle" und „Beides" sind die bibliografischen Angaben das Wichtige,
   // also aufgeklappt. Bei reiner Recherche bleiben sie eingeklappt erreichbar.
   if (mode !== 'research') ui.sourceFields.open = true;
@@ -362,7 +373,6 @@ const CLAMP_LABELS = {
   source: 'popup_clamp_source',
   tags: 'popup_clamp_tags',
   urls: 'popup_clamp_urls',
-  url: 'popup_clamp_url',
 };
 
 /**
@@ -485,7 +495,11 @@ function scheduleDuplicateCheck() {
   duplicateTimer = setTimeout(() => void checkDuplicate(), DUPLICATE_DEBOUNCE_MS);
 }
 
+/** Laufende Nummer: nur die Antwort auf die JUENGSTE Pruefung wird gezeigt. */
+let duplicateSeq = 0;
+
 async function checkDuplicate() {
+  const seq = ++duplicateSeq;
   ui.duplicateNotice.hidden = true;
   ui.duplicateIncomplete.hidden = true;
   if (!context.harvested) return;
@@ -496,6 +510,8 @@ async function checkDuplicate() {
 
   try {
     const result = await send(MSG.CHECK_DUPLICATE, { url, bookId: ui.book.value || null });
+    // Buch, URL oder Modus wurden inzwischen geaendert — diese Antwort ist alt.
+    if (seq !== duplicateSeq) return;
     renderDuplicate(result.source || {}, result.research || {});
   } catch {
     // Dubletten-Pruefung ist Komfort; ein Fehler blockiert das Erfassen nicht.
@@ -758,8 +774,14 @@ function showError(error) {
 /** @param {any} error */
 function showFatal(error) {
   ui.loading.hidden = true;
-  ui.tokenProblem.hidden = false;
-  ui.tokenProblemText.textContent = errorText(error, t);
+  // Nur ein echtes Token-Problem gehoert in die Token-Zeile; alles andere
+  // (Worker nicht erreichbar, Speicher unlesbar) ist ein eigener Fehler.
+  if (error && error.auth) {
+    showTokenProblem(errorText(error, t));
+    return;
+  }
+  ui.fatalProblem.hidden = false;
+  ui.fatalProblemText.textContent = errorText(error, t);
 }
 
 /**

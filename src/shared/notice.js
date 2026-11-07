@@ -104,7 +104,14 @@ export function createBookOption(book, translate) {
  */
 export function showUiError(error, opts = {}) {
   const translate = opts.translate || ((key) => key);
-  const text = describeError(error, translate).text || errorText(error, translate);
+  // Kommt der Fehler aus dem Service Worker, ist er dort schon beschrieben
+  // (`message` mit Code, `key` gesetzt). Ein zweites `describeError` saehe nur
+  // noch Ersatzcodes wie `NETWORK` oder `HTTP_503`, die die Map nicht kennt, und
+  // verloere die Platzhalter — heraus kaeme „unbekannter Fehlercode NETWORK".
+  const alreadyDescribed = !!(error && error.key && typeof error.message === 'string' && error.message);
+  const text = alreadyDescribed
+    ? error.message
+    : describeError(error, translate).text || errorText(error, translate);
   if (error && error.auth && opts.onAuth) {
     opts.onAuth(text);
     return;

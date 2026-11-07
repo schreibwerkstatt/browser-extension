@@ -34,11 +34,14 @@ const CONTRACT_CODES = [
   'BOOKID_REQ',
   'INVALID_VALUE',
   'INVALID_URL',
+  'INVALID_FIELD',
   'EMPTY',
   'SOURCE_IDENTITY_REQ',
   'CITEKEY_TAKEN',
-  'LOGIN_REQ',
   'INVALID_ID',
+  'DUPLICATE_URL',
+  'SEARCH_FAILED',
+  'SHUTTING_DOWN',
   'ITEM_NOT_FOUND',
   'NO_IMAGE',
   'IMAGE_INVALID',
@@ -57,6 +60,13 @@ const CONTRACT_CODES = [
   'LOOKUP_UNAVAILABLE',
   'LOOKUP_FAILED',
 ];
+
+/**
+ * Codes, die aeltere Server sendeten und der heutige Vertrag nicht mehr kennt.
+ * Sie bleiben gemappt, weil selbst gehostete Instanzen nachhinken — sie sind
+ * keine Erfindung, nur Altlast.
+ */
+const LEGACY_CODES = ['LOGIN_REQ'];
 
 /** Codes, die der Client einmal erwartete und die der Server nie gesendet hat. */
 const ERFUNDENE_CODES = [
@@ -111,8 +121,38 @@ describe('Fehlercode-Map gegen den Vertrag', () => {
     assert.deepEqual(fehlend, []);
   });
 
-  it('LOGIN_REQ und NOT_LOGGED_IN sind derselbe Fall unter zwei Namen', () => {
-    // `routes/research.js` sagt LOGIN_REQ, die Quellen-/Capture-Routen
+  it('jeder gemappte Server-Code steht im Vertrag oder ist ausgewiesene Altlast', () => {
+    const eigene = new Set([
+      'NO_SERVER_CONFIGURED', 'NO_TOKEN_CONFIGURED', 'TIMEOUT', 'CLIENT_VALIDATION_FAILED',
+      'CLIENT_IMAGE_TOO_LARGE', 'CLIENT_DOC_TOO_LARGE', 'CLIENT_PAYLOAD_TOO_LARGE',
+      'HARVEST_FAILED', 'NO_ACTIVE_TAB', 'INVALID_SERVER_URL', 'UNKNOWN_MESSAGE',
+      'CLIENT_SERVER_CHANGED', 'CLIENT_TOKEN_REQUIRED',
+    ]);
+    const bekannt = new Set([...CONTRACT_CODES, ...LEGACY_CODES, ...eigene]);
+    assert.deepEqual(Object.keys(ERROR_MESSAGE_KEYS).filter((code) => !bekannt.has(code)), []);
+  });
+
+  it('INVALID_FIELD nennt das Feld und wird nicht wiederholt', () => {
+    const error = { status: 400, code: 'INVALID_FIELD', params: { field: 'title' } };
+    assert.deepEqual(substitutionsForError(error), ['title']);
+    assert.equal(isRetryable(error), false);
+  });
+
+  it('INVALID_URL setzt `params.max` nicht in den Text ein und ist endgueltig', () => {
+    const error = { status: 400, code: 'INVALID_URL', params: { max: 2000 } };
+    assert.deepEqual(substitutionsForError(error), []);
+    assert.equal(isRetryable(error), false);
+  });
+
+  it('SEARCH_FAILED und SHUTTING_DOWN sind voruebergehend — wiederholen', () => {
+    // Vertrag: „wie einen vorübergehenden Fehler behandeln und erneut versuchen".
+    assert.equal(isRetryable({ status: 503, code: 'SEARCH_FAILED' }), true);
+    assert.equal(isRetryable({ status: 503, code: 'SHUTTING_DOWN' }), true);
+    assert.equal(messageKeyForError({ status: 503, code: 'SHUTTING_DOWN' }), 'err_shutting_down');
+  });
+
+  it('LOGIN_REQ (Altlast) und NOT_LOGGED_IN sind derselbe Fall unter zwei Namen', () => {
+    // Aeltere Server sagten auf `/research` LOGIN_REQ, heute kommt dort
     // NOT_LOGGED_IN. Gleiche Meldung, gleiche Behandlung.
     assert.equal(messageKeyForError({ status: 401, code: 'LOGIN_REQ' }), 'err_not_logged_in');
     assert.equal(isAuthError({ status: 401, code: 'LOGIN_REQ' }), true);

@@ -1,6 +1,6 @@
 {
   "name": "schreibwerkstatt-browser-extension",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Chrome-Erweiterung: Webseiten als Recherche-Fundstueck oder zitierfaehige Quelle in die Schreibwerkstatt schicken.",
   "private": true,
   "type": "module",

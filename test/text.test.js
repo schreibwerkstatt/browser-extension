@@ -8,6 +8,7 @@ import {
   extractIsbn,
   isoDate,
   normalizeDate,
+  sliceUnits,
   tidyParagraphs,
   truncateAtSentence,
   yearFromDate,
@@ -167,6 +168,46 @@ describe('normalizeDate', () => {
   it('nichts Verwertbares ergibt null', () => {
     assert.equal(normalizeDate('bald'), null);
     assert.equal(normalizeDate(''), null);
+  });
+
+  it('prueft den Kalender: kein Monat 13, kein 31. Februar', () => {
+    assert.equal(normalizeDate('2024-13-45'), null);
+    assert.equal(normalizeDate('2024-00-10'), null);
+    assert.equal(normalizeDate('2024-04-31'), null);
+    assert.equal(normalizeDate('31.02.2024'), null);
+    assert.equal(normalizeDate('0.5.2024'), null);
+    assert.equal(normalizeDate('2024/02/30'), null);
+  });
+
+  it('kennt die Schaltjahre', () => {
+    assert.equal(normalizeDate('2024-02-29'), '2024-02-29');
+    assert.equal(normalizeDate('29.2.2000'), '2000-02-29');
+    assert.equal(normalizeDate('2023-02-29'), null);
+    assert.equal(normalizeDate('29.02.1900'), null);
+  });
+});
+
+describe('Schnitt durch ein Surrogatpaar', () => {
+  // '😀' ist ein Surrogatpaar: zwei UTF-16-Einheiten, ein Zeichen.
+  it('sliceUnits laesst keine einsame High-Surrogate stehen', () => {
+    assert.equal(sliceUnits('ab😀', 3), 'ab');
+    assert.equal(sliceUnits('ab😀', 4), 'ab😀');
+    assert.equal(sliceUnits('ab😀c', 4), 'ab😀');
+    assert.equal(sliceUnits('abc', 0), '');
+  });
+
+  it('clampLine schneidet eine Einheit frueher und bleibt unter dem Limit', () => {
+    const result = clampLine('x'.repeat(9) + '😀 Rest', 10);
+    assert.equal(result, 'x'.repeat(9));
+    assert.ok(result.length <= 10);
+    assert.ok(!/[\uD800-\uDBFF]$/.test(result));
+  });
+
+  it('truncateAtSentence trennt beim harten Schnitt kein Emoji', () => {
+    const result = truncateAtSentence('😀'.repeat(20), 11);
+    assert.equal(result.text, '😀'.repeat(5));
+    assert.ok(result.text.length <= 11);
+    assert.equal(result.truncated, true);
   });
 });
 

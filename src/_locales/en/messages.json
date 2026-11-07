@@ -117,7 +117,13 @@
     "message": "The server does not accept this value for “$1”. Allowed: $2."
   },
   "err_invalid_url": {
-    "message": "The server cannot process this address. It must start with http:// or https://."
+    "message": "The server does not accept this address: it must start with http:// or https:// and be at most 2000 characters long. It is never shortened."
+  },
+  "err_invalid_field": {
+    "message": "The server rejected the field “$1”: it has the wrong type."
+  },
+  "err_duplicate_url": {
+    "message": "This book already has a finding for this address."
   },
   "err_empty": {
     "message": "A research find needs at least a title, some text or a URL."
@@ -194,6 +200,12 @@
   "err_client_payload_too_large": {
     "message": "This entry is too large for a single call."
   },
+  "err_client_server_changed": {
+    "message": "This entry was captured for a different server and will not be sent to the current one. Discard it or switch back to the old server."
+  },
+  "err_client_token_required": {
+    "message": "For a new server, please also enter a new device token — the current one belongs to the old server."
+  },
   "err_harvest_failed": {
     "message": "This page cannot be read. On Chrome's own pages and in the Web Store that is normal."
   },
@@ -223,6 +235,12 @@
   },
   "err_server_error": {
     "message": "The server reported an error. It will be retried later."
+  },
+  "err_search_failed": {
+    "message": "The search on the server failed. It will be retried later."
+  },
+  "err_shutting_down": {
+    "message": "The server is restarting. Nothing was saved; it will be retried shortly."
   },
   "err_network": {
     "message": "No connection to the server. The item is waiting in the queue."
@@ -268,6 +286,9 @@
   },
   "validation_url_scheme": {
     "message": "The URL must start with http:// or https://."
+  },
+  "validation_url_too_long": {
+    "message": "The address is $2 characters long, the server accepts at most $1. Shortened, it would point to a different page – so it was not sent."
   },
   "validation_year_invalid": {
     "message": "Please enter a four-digit year."
@@ -316,6 +337,9 @@
   },
   "csl_article": {
     "message": "Journal article"
+  },
+  "csl_newspaper": {
+    "message": "Newspaper article"
   },
   "csl_website": {
     "message": "Web page"
@@ -412,9 +436,6 @@
   },
   "popup_clamp_urls": {
     "message": "Further links"
-  },
-  "popup_clamp_url": {
-    "message": "Source URL"
   },
   "popup_saved_source_existed": {
     "message": "The source was already in your library and was only linked to the book."
@@ -763,6 +784,12 @@
   },
   "notice_citekey_dropped": {
     "message": "The citation key “$1” was already taken — the server assigned one of its own."
+  },
+  "notice_quote_approximate": {
+    "message": "The quote comes from an embedded frame or a restricted page: line breaks and repeated spaces were lost. Please check the wording in the web app."
+  },
+  "popup_host_permission_missing": {
+    "message": "Access to the server has not been granted. Please choose “Allow access to this host” in the options."
   },
   "options_section_privacy": {
     "message": "6. What leaves the browser"

@@ -67,7 +67,7 @@ export function truncateAtSentence(value, max = LIMITS.BODY_MAX) {
   if (max <= 0) return { text: '', truncated: originalLength > 0, originalLength };
   if (originalLength <= max) return { text, truncated: false, originalLength };
 
-  const window = text.slice(0, max);
+  const window = sliceUnits(text, max);
 
   // Letzte Satzgrenze im erlaubten Fenster suchen.
   let cut = -1;
@@ -97,7 +97,24 @@ export function truncateAtSentence(value, max = LIMITS.BODY_MAX) {
 export function clampLine(value, max = LIMITS.TITLE_MAX) {
   const text = collapseWhitespace(value);
   if (text.length <= max) return text;
-  return text.slice(0, max).trimEnd();
+  return sliceUnits(text, max).trimEnd();
+}
+
+/**
+ * Schneidet nach hoechstens `max` UTF-16-Einheiten — aber nie mitten in ein
+ * Surrogatpaar (Emoji, seltene Schriftzeichen). Endete der Schnitt auf einer
+ * High-Surrogate, faellt sie mit weg; die Laenge bleibt so immer <= `max`.
+ *
+ * @param {string} text
+ * @param {number} max
+ * @returns {string}
+ */
+export function sliceUnits(text, max) {
+  if (max <= 0) return '';
+  if (text.length <= max) return text;
+  const code = text.charCodeAt(max - 1);
+  const end = code >= 0xd800 && code <= 0xdbff ? max - 1 : max;
+  return text.slice(0, end);
 }
 
 /**
@@ -222,20 +239,36 @@ export function normalizeDate(value) {
 
   // Kein `\b` am Ende: ISO-Zeitstempel haengen ein "T…" an den Tag an.
   const iso = text.match(/\b(\d{4})-(\d{2})-(\d{2})(?!\d)/);
-  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  if (iso) return calendarDate(iso[1], iso[2], iso[3]);
 
   const german = text.match(/\b(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})\b/);
-  if (german) {
-    const pad = (n) => String(n).padStart(2, '0');
-    return `${german[3]}-${pad(german[2])}-${pad(german[1])}`;
-  }
+  if (german) return calendarDate(german[3], german[2], german[1]);
 
   const slashed = text.match(/\b(\d{4})\/(\d{1,2})\/(\d{1,2})\b/);
-  if (slashed) {
-    const pad = (n) => String(n).padStart(2, '0');
-    return `${slashed[1]}-${pad(slashed[2])}-${pad(slashed[3])}`;
-  }
+  if (slashed) return calendarDate(slashed[1], slashed[2], slashed[3]);
 
   const year = yearFromDate(text);
   return year ? String(year) : null;
+}
+
+/**
+ * `YYYY-MM-DD`, wenn es den Tag im Kalender gibt, sonst null. Ein Datum, das
+ * nach Datum aussieht, aber keins ist („2024-13-45", „31.02.2024"), ist
+ * kaputt — dann lieber gar keins als ein geratenes Jahr.
+ *
+ * @param {string} year
+ * @param {string} month
+ * @param {string} day
+ * @returns {string|null}
+ */
+function calendarDate(year, month, day) {
+  const y = Number(year);
+  const m = Number(month);
+  const d = Number(day);
+  if (m < 1 || m > 12 || d < 1) return null;
+  const leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1];
+  if (d > days) return null;
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${year}-${pad(m)}-${pad(d)}`;
 }

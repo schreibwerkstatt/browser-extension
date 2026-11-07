@@ -24,13 +24,13 @@
 
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
   DRAFT_STATES, PUBLISH_STATES, UPLOAD_STATES, accessToken, assertOutsideRepo,
   describeStatus, fetchItem, missingFields, publishItem, readConfig,
-  stillProcessing, uploadPackage,
+  stillProcessing, uploadPackage, zipManifestVersion,
 } from './lib/cws.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -99,11 +99,29 @@ if (missing.length) {
 let zip;
 let zipFile;
 if (!args.publishOnly) {
-  zipFile = args.zip ? join(ROOT, args.zip) : join(ROOT, 'store', `schreibwerkstatt-chrome-${version}.zip`);
+  zipFile = args.zip ? resolve(ROOT, args.zip) : join(ROOT, 'store', `schreibwerkstatt-chrome-${version}.zip`);
   try {
     zip = await readFile(zipFile);
   } catch {
     fail(`${relative(ROOT, zipFile)} fehlt. Erst \`npm run package\` ausfuehren.`);
+  }
+
+  // Massgeblich ist das Manifest IM Paket, nicht dist/ und nicht der
+  // Dateiname: genau dieses Archiv geht hoch. Gilt auch fuer `--zip=` — ein
+  // altes oder fremdes ZIP soll nicht unter der aktuellen Versionsnummer
+  // eingereicht werden.
+  let zipVersion;
+  try {
+    zipVersion = zipManifestVersion(zip);
+  } catch (error) {
+    fail(`${relative(ROOT, zipFile)}: ${error.message}`);
+  }
+  if (zipVersion !== pkg.version) {
+    fail(`Version laeuft auseinander: manifest.json im Paket ${zipVersion}, package.json ${pkg.version}. `
+      + 'Neu packen mit `npm run package`.');
+  }
+  if (version !== zipVersion) {
+    fail(`--version=${version} passt nicht zum Paket (manifest.json: ${zipVersion}).`);
   }
 }
 

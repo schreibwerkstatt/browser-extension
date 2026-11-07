@@ -64,7 +64,13 @@ export const ERROR_MESSAGE_KEYS = Object.freeze({
   // ----------------------------------------------------- Auth und Berechtigung
   /** Token fehlt, unbekannt, widerrufen, abgelaufen — oder Konto gesperrt. */
   NOT_LOGGED_IN: 'err_not_logged_in',
-  /** Dasselbe unter anderem Namen: so antworten die `POST /research*`-Routen. */
+  /**
+   * ALTLAST, kein Vertragscode mehr: so antworteten die `/research`-Routen
+   * aelterer Server. Heute kommt die 401 dort aus dem Buch-Guard, und zwar als
+   * `NOT_LOGGED_IN` („keinen zweiten Code fuer dieselbe Lage", docs/clients.md).
+   * Bleibt stehen, weil selbst gehostete Instanzen nicht im Gleichschritt
+   * aktualisiert werden.
+   */
   LOGIN_REQ: 'err_not_logged_in',
   /**
    * Methode+Pfad stehen nicht in der Allowlist DIESES Tokens. Aussage ueber das
@@ -94,7 +100,20 @@ export const ERROR_MESSAGE_KEYS = Object.freeze({
   // -------------------------------------------------------------- Nutzdaten
   /** Wert nicht in der Whitelist. `params: { field, allowed }`. */
   INVALID_VALUE: 'err_invalid_value',
+  /**
+   * URL nicht http(s), nicht normalisierbar oder ueber 2000 Zeichen
+   * (`params: { max }`). Abgelehnt wird der ganze Request; gekuerzt wird nie.
+   */
   INVALID_URL: 'err_invalid_url',
+  /** `title`/`body`/`source` weder String noch `null`. `params: { field }`. */
+  INVALID_FIELD: 'err_invalid_field',
+  /**
+   * `POST /research`: eine der URLs haengt schon an einem Fundstueck dieses
+   * Buchs. Traegt `existing_id`. Der Ablauf antwortet darauf selbst (einmal mit
+   * `allow_duplicate: true`, siehe `capture-runner.js`) — die Meldung ist fuer
+   * den Fall, dass er es nicht kann.
+   */
+  DUPLICATE_URL: 'err_duplicate_url',
   /** Fundstueck ohne Titel, Text und URL. */
   EMPTY: 'err_empty',
   /** Quelle ohne Titel und ohne Person. */
@@ -116,6 +135,12 @@ export const ERROR_MESSAGE_KEYS = Object.freeze({
   DOC_UNREADABLE: 'err_doc_unreadable',
   /** Quelle gehoert einem anderen Konto — Bibliotheks-Hoheit, nicht Buchrecht. */
   NOT_SOURCE_OWNER: 'err_not_source_owner',
+
+  // ----------------------------------------------------- Voruebergehend (503)
+  /** `GET /research?q=`: Volltextsuche gescheitert — keine ungefilterte Liste. */
+  SEARCH_FAILED: 'err_search_failed',
+  /** Server startet gerade neu (Deploy). Es wurde nichts geschrieben. */
+  SHUTTING_DOWN: 'err_shutting_down',
 
   // ------------------------------------------------------------ Quellenpfade
   URL_REQ: 'err_url_req',
@@ -142,6 +167,10 @@ export const ERROR_MESSAGE_KEYS = Object.freeze({
   CLIENT_IMAGE_TOO_LARGE: 'err_client_image_too_large',
   CLIENT_DOC_TOO_LARGE: 'err_client_doc_too_large',
   CLIENT_PAYLOAD_TOO_LARGE: 'err_client_payload_too_large',
+  /** Auftrag wurde fuer einen anderen Server erfasst — angehalten, nicht umgeleitet. */
+  CLIENT_SERVER_CHANGED: 'err_client_server_changed',
+  /** Serverwechsel ohne neues Token: das alte ginge sonst an den fremden Host. */
+  CLIENT_TOKEN_REQUIRED: 'err_client_token_required',
   HARVEST_FAILED: 'err_harvest_failed',
   NO_ACTIVE_TAB: 'err_no_active_tab',
   INVALID_SERVER_URL: 'err_invalid_server_url',
@@ -200,6 +229,8 @@ const TERMINAL_CODES = new Set([
   'INVALID_ID',
   'INVALID_VALUE',
   'INVALID_URL',
+  'INVALID_FIELD',
+  'DUPLICATE_URL',
   'EMPTY',
   'SOURCE_IDENTITY_REQ',
   'ITEM_NOT_FOUND',
@@ -223,6 +254,8 @@ const TERMINAL_CODES = new Set([
   'CLIENT_IMAGE_TOO_LARGE',
   'CLIENT_DOC_TOO_LARGE',
   'CLIENT_PAYLOAD_TOO_LARGE',
+  'CLIENT_SERVER_CHANGED',
+  'CLIENT_TOKEN_REQUIRED',
   'INVALID_SERVER_URL',
 ]);
 
@@ -239,6 +272,9 @@ const TERMINAL_CODES = new Set([
 const SUBSTITUTION_FIELDS = Object.freeze({
   INSUFFICIENT_ROLE: ['actual', 'required'],
   INVALID_VALUE: ['field', 'allowed'],
+  INVALID_FIELD: ['field'],
+  // `params.max` steht fest bei 2000 und im Text; nichts einsetzen.
+  INVALID_URL: [],
   CITEKEY_TAKEN: ['citekey'],
 });
 
@@ -325,9 +361,9 @@ export function isRetryable(error = {}) {
  * Ist das ein Authentifizierungsproblem? Dann Token als ungueltig markieren,
  * Badge rot, Options-Seite verlinken.
  *
- * Zwei Namen fuer dasselbe 401: `routes/research.js` antwortet `LOGIN_REQ`, die
- * Quellen- und Capture-Routen `NOT_LOGGED_IN`. Beide bedeuten „Token ungueltig
- * oder widerrufen" und bekommen dieselbe Behandlung.
+ * Der Vertrag kennt fuer 401 nur `NOT_LOGGED_IN`. `LOGIN_REQ` sendeten die
+ * `/research`-Routen aelterer Server fuer dieselbe Lage; er bekommt deshalb
+ * dieselbe Behandlung.
  *
  * @param {{status?: number, code?: string}} error
  */

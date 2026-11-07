@@ -21,13 +21,16 @@
  *
  * Umgebungsvariablen:
  *   REVIEW_TOKEN  Pflicht. Das Token, das der Pruefer eintraegt. Muss mit
- *                 `swd_` beginnen, sonst weist die Options-Seite es ab.
+ *                 `swd_` beginnen: die Options-Seite speichert zwar auch
+ *                 anderes, zeigt dann aber einen Formathinweis — und der
+ *                 soll im Einrichtungsdialog des Pruefers nicht stehen.
  *   PORT          Voreinstellung 8787
  *   HOST          Voreinstellung 0.0.0.0
  *
- * Der Pruefer braucht **HTTPS**: die Options-Seite warnt bei einer
- * nicht-lokalen `http`-Adresse, und eine Warnung im Einrichtungsdialog ist das
- * Letzte, was er sehen soll. Also hinter einen Reverse-Proxy mit Zertifikat.
+ * Der Pruefer braucht **HTTPS**: eine nicht-lokale `http`-Adresse laesst die
+ * Options-Seite gar nicht speichern (`isBlockedHttp` in
+ * src/options/options.js) — das Manifest kann fuer solche Origins keine
+ * Host-Berechtigung anfordern. Also hinter einen Reverse-Proxy mit Zertifikat.
  */
 
 import { startMockServer } from '../test/helpers/mock-server.js';
@@ -50,7 +53,7 @@ if (!token) {
 }
 
 if (!token.startsWith('swd_')) {
-  process.stderr.write('\nFEHLER: REVIEW_TOKEN muss mit "swd_" beginnen — die Options-Seite weist alles andere ab.\n\n');
+  process.stderr.write('\nFEHLER: REVIEW_TOKEN muss mit "swd_" beginnen — sonst zeigt die Options-Seite dem Pruefer einen Formathinweis.\n\n');
   process.exit(1);
 }
 

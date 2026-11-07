@@ -5,7 +5,7 @@
 
 > Diese Datei ist der Text, der unter der im Chrome Web Store angegebenen URL
 > erreichbar sein muss. Sobald der aktuelle Stand auf `main` liegt, erfüllt
-> <https://github.com/bedeberger/schreibwerkstatt-browser-extension/blob/main/store/privacy-policy.de.md>
+> <https://github.com/schreibwerkstatt/browser-extension/blob/main/store/privacy-policy.de.md>
 > diese Anforderung — weitere Wege in
 > [PUBLISHING.md](PUBLISHING.md#3-datenschutzerklärung-veröffentlichen).
 > Der Text ist vollständig; nichts mehr einzutragen.

@@ -493,7 +493,7 @@ dritte von vier Requests, setzt der nächste Versuch genau dort fort. Ein
 
 ### Grenzen, die clientseitig geprüft werden
 
-Es sind zwei Sorten Grenze, und sie verlangen entgegengesetztes Verhalten.
+Es sind drei Sorten Grenze, und sie verlangen unterschiedliches Verhalten.
 
 **Textfelder kürzt der Server still** — er lehnt nicht ab, er schneidet ab und
 antwortet `2xx`. Wer das nicht spiegelt, quittiert einen Text, der so nie
@@ -506,8 +506,13 @@ zeigt es im Popup an:
 | Text | 20 000 Zeichen |
 | Herkunfts-URL (`source`) | 1 000 Zeichen |
 | Schlagwörter | 60 Zeichen, 20 Stück |
-| URLs | 2 000 Zeichen, 20 Stück; Label 300 |
+| URLs | 20 Stück; Label 300 Zeichen |
 | Anhang-Dateiname | 200 Zeichen |
+
+**Adressen kürzt niemand.** Eine URL über 2 000 Zeichen oder ohne `http(s)`
+weist der Server mit `400 INVALID_URL` ab — den ganzen Request, seit Vertrag
+`api 6`. Eine abgeschnittene Adresse zeigt auf eine andere Seite; die Erweiterung
+lehnt sie deshalb vorher sichtbar ab, statt sie zu kürzen.
 
 **Ausnahme Wortlauttreue:** ein markiertes **Zitat** über 20 000 Zeichen wird nie
 beschnitten, sondern sichtbar abgelehnt. Geernteter Haupttext dagegen wird an
@@ -523,8 +528,8 @@ antwortet bei Überschreitung mit einem nackten `413` als HTML-Seite — ohne
 
 ## Getroffene Annahmen
 
-Vier Stellen des Vertrags waren beim Bauen nicht eindeutig. Alle vier sind
-inzwischen gegen den Server geprüft; so steht es jetzt:
+Fünf Stellen des Vertrags waren nicht eindeutig oder haben sich geändert. Alle
+sind gegen den Server geprüft; so steht es jetzt:
 
 1. **`source` in `POST /research`** trägt die Herkunfts-URL als String
    (die normalisierte Fassung). Zusätzliche Links — kanonische URL, PDF — gehen
@@ -557,7 +562,15 @@ inzwischen gegen den Server geprüft; so steht es jetzt:
    der Server vergibt einen eigenen; **auch das steht dann in der Quittung**,
    sonst wäre der Verlust an der letzten Stelle doch noch still geworden.
 
-Die ersten beiden und die vierte stecken in `src/background/capture-runner.js`,
+5. **Ein zweites Fundstück zur selben Seite ist gewollt.** `POST /research`
+   antwortet seit Server v4.15.0 auf eine URL, die im Buch schon an einem
+   Fundstück hängt, mit `409 DUPLICATE_URL`. Auf dem Fallback-Pfad sendet die
+   Erweiterung dann **einmal** mit `allow_duplicate: true` nach — zwei Zitate aus
+   derselben Seite sind zwei Funde, genau wie bei `POST /capture`, und das Popup
+   hat vorher schon auf den Bestand hingewiesen. Das Feld geht nur im zweiten
+   Anlauf mit, ein älterer Server bekommt es also nie zu sehen.
+
+Die ersten beiden, die vierte und die fünfte stecken in `src/background/capture-runner.js`,
 die dritte in `src/shared/duplicates.js`; alle sind mit Tests in
 `test/integration.test.js` (und `test/duplicates.test.js`) festgenagelt — eine
 Änderung ist an einer Stelle erledigt.

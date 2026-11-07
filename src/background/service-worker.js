@@ -24,7 +24,6 @@ const store = createStore();
 import {
   BOOKS_TTL_MS,
   CAPABILITY_TTL_MS,
-  JOB_STATE,
   STORAGE_KEYS,
   TOKEN_STATE,
   canWriteToBook,
@@ -36,6 +35,7 @@ import { intentFromHarvest } from '../shared/intent.js';
 import { LIMITS, RESEARCH_LIST } from '../shared/limits.js';
 import { attachmentsAreLost, incompleteText } from '../shared/outcome.js';
 import { t } from '../ui/chrome-i18n.js';
+import { toOriginPattern } from '../shared/url.js';
 
 const QUEUE_ALARM = 'schreibwerkstatt-queue';
 const CONTEXT_MENU_QUOTE = 'schreibwerkstatt-capture-quote';
@@ -74,8 +74,14 @@ const queue = createQueue({
   translate: t,
 });
 
-/** Verhindert, dass zwei Wecker gleichzeitig dieselbe Queue abarbeiten. */
-let processing = false;
+/**
+ * Laufender Durchlauf von `processQueue` — verhindert, dass zwei Wecker
+ * gleichzeitig dieselbe Queue abarbeiten.
+ * @type {Promise<void>|null}
+ */
+let current = null;
+/** Waehrend des Durchlaufs angefordert: danach noch einmal nachsehen. */
+let again = false;
 
 /**
  * Was beim letzten Durchlauf mit einem Auftrag passiert ist.
@@ -208,13 +214,29 @@ async function resolveCapabilities(allowProbe = true) {
 
 /** @param {'capture'|'byUrl'|'researchList'} name */
 function markCapabilityMissing(name) {
-  void store.getCapabilities().then((capabilities) =>
-    store.saveDetectedCapabilities({
-      capture: name === 'capture' ? false : capabilities.capture.detected,
-      byUrl: name === 'byUrl' ? false : capabilities.byUrl.detected,
-      researchList: name === 'researchList' ? false : capabilities.researchList.detected,
-    }),
-  );
+  // Nur den einen Befund nennen: `pick` behaelt die uebrigen, und das Lesen
+  // geschieht innerhalb der serialisierten Schreibkette des Stores.
+  store.saveDetectedCapabilities({ [name]: false }).catch((error) => {
+    console.error('markCapabilityMissing', error);
+  });
+}
+
+/**
+ * Hat der Nutzer den Zugriff auf den Server erlaubt? Ohne die
+ * Host-Berechtigung scheitert jeder Aufruf an CORS — und sieht dann aus wie
+ * „keine Verbindung", endlos wiederholt.
+ *
+ * @param {string} serverUrl
+ * @returns {Promise<boolean|null>} `null`, wenn sich das nicht feststellen laesst
+ */
+async function hasHostPermission(serverUrl) {
+  const pattern = toOriginPattern(serverUrl);
+  if (!pattern || !chrome.permissions) return null;
+  try {
+    return await chrome.permissions.contains({ origins: [pattern] });
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -426,24 +448,68 @@ async function fetchBooks(force = false) {
 // Warteschlange abarbeiten
 // ---------------------------------------------------------------------------
 
-async function processQueue() {
-  if (processing) return;
-  processing = true;
+/**
+ * Arbeitet die Warteschlange ab. Laeuft schon ein Durchlauf, wird kein
+ * zweiter gestartet, sondern ein weiterer angehaengt und das Ganze abgewartet.
+ *
+ * Frueher kehrte ein zweiter Aufruf sofort zurueck. `SUBMIT_CAPTURE` fand den
+ * eben angelegten Auftrag dann unbearbeitet vor und das Popup meldete „in
+ * Warteschlange: unbekannter Fehler" — ohne dass etwas schiefgegangen war.
+ *
+ * @returns {Promise<void>}
+ */
+function processQueue() {
+  if (current) {
+    again = true;
+    return current;
+  }
+  current = (async () => {
+    try {
+      do {
+        again = false;
+        await processQueueOnce();
+      } while (again);
+    } finally {
+      current = null;
+    }
+  })();
+  return current;
+}
+
+async function processQueueOnce() {
   try {
     const jobs = await queue.due();
     // Nur proben, wenn ohnehin gesendet wird. Ein Wecker, der nichts
     // vorfindet, loest keinen einzigen Netzwerkaufruf aus.
     const capabilities = await resolveCapabilities(jobs.length > 0);
 
-    for (const job of jobs) {
+    const { serverUrl } = jobs.length ? await store.getConfig() : { serverUrl: '' };
+
+    for (const due of jobs) {
       // Ein Auftrag im Undo-Fenster wird beim Faelligwerden regulaer gesendet.
-      await queue.update(job.id, { state: JOB_STATE.RUNNING });
-      await restoreAttachments(job);
+      // `claim` statt der Momentaufnahme: was der Nutzer inzwischen
+      // zurueckgenommen oder verworfen hat, geht nicht mehr hinaus.
+      const job = await queue.claim(due.id);
+      if (!job) continue;
       try {
+        // Erfasst fuer einen anderen Server: seine `book_id` gilt hier nicht.
+        // Angehalten und gemeldet, nie umgeleitet — und nie still verworfen.
+        if (job.serverUrl && serverUrl && job.serverUrl !== serverUrl) {
+          throw new ApiError({
+            status: 0,
+            code: 'CLIENT_SERVER_CHANGED',
+            params: { server: job.serverUrl },
+            message: `job for ${job.serverUrl}`,
+          });
+        }
+        await restoreAttachments(job);
         await runCaptureJob(job, {
           api,
           capabilities,
           onCapabilityMissing: markCapabilityMissing,
+          onProgress: async (progress) => {
+            await queue.update(job.id, { progress: { ...progress } });
+          },
         });
         rememberOutcome(job.id, job.progress);
         await queue.complete(job.id);
@@ -458,10 +524,17 @@ async function processQueue() {
         if (!willRetry) await notifyFailure(job, error);
       }
     }
+  } catch (error) {
+    // Ein Fehler ausserhalb eines Auftrags (Speicher, Konfiguration) darf
+    // nicht als unbehandelte Rejection verschwinden.
+    console.error('processQueue', error);
   } finally {
-    processing = false;
-    await scheduleNextWake();
-    await refreshBadge();
+    try {
+      await scheduleNextWake();
+      await refreshBadge();
+    } catch (error) {
+      console.error('processQueue/finally', error);
+    }
   }
 }
 
@@ -478,6 +551,7 @@ async function restoreAttachments(job) {
   if (attachmentsAreLost(job.intent.attachmentsDeclared || {}, job.progress, !!cached)) {
     job.progress.attachmentsLost = true;
   }
+  if (job.intent.quoteApproximate) job.progress.quoteApproximate = true;
 }
 
 async function scheduleNextWake() {
@@ -634,7 +708,13 @@ async function captureQuoteFromTab(tab, fallbackSelection = '') {
     harvested = null;
   }
 
-  const selection = (harvested && harvested.selectionText) || fallbackSelection || '';
+  const harvestedSelection = (harvested && harvested.selectionText) || '';
+  const selection = harvestedSelection || fallbackSelection || '';
+  // `info.selectionText` ist nicht der Wortlaut: Chrome fasst Leerraum zusammen
+  // und wirft Zeilenumbrueche weg. Er greift, wenn die Ernte scheiterte oder
+  // die Markierung in einem iframe liegt (das Content-Script sieht nur den
+  // obersten Frame). Gespeichert wird trotzdem — aber mit Vermerk.
+  const approximate = !harvestedSelection && !!fallbackSelection;
   if (!selection.trim()) {
     await notify('noselection', {
       title: t('notify_no_selection_title'),
@@ -667,7 +747,9 @@ async function captureQuoteFromTab(tab, fallbackSelection = '') {
   // Warten nur eine Verzoegerung ohne Gegenwert.
   const holdMs = settings.notifications ? settings.undoDelayMs : 0;
 
-  const job = await queue.add(intent, { holdMs });
+  if (approximate) intent.quoteApproximate = true;
+
+  const job = await queue.add(intent, { holdMs, serverUrl: state[STORAGE_KEYS.SERVER_URL] });
   if (holdMs > 0) await showUndoNotification(job, holdMs);
   await refreshBadge();
   await scheduleNextWake();
@@ -705,6 +787,7 @@ const handlerCtx = {
   attachmentCache,
   lastOutcome,
   showUndoNotification,
+  hasHostPermission,
   extensionVersion: () => EXTENSION_VERSION,
 };
 
@@ -738,13 +821,31 @@ chrome.runtime.onStartup.addListener(() => {
   })();
 });
 
+/**
+ * Erfassen ohne Popup — niemand wartet auf eine Antwort. Scheitert es
+ * (Speicher voll, Zustand unlesbar), waere das Zitat ohne diese Huelle
+ * spurlos weg.
+ *
+ * @param {chrome.tabs.Tab|undefined} tab
+ * @param {string} [fallbackSelection]
+ */
+function captureQuoteSafely(tab, fallbackSelection) {
+  captureQuoteFromTab(tab, fallbackSelection).catch(async (error) => {
+    console.error('captureQuoteFromTab', error);
+    await notify(`fail:quote:${Date.now()}`, {
+      title: t('notify_failed_title'),
+      message: describeError(error, t).text,
+    });
+  });
+}
+
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId !== CONTEXT_MENU_QUOTE) return;
-  void captureQuoteFromTab(tab, info.selectionText || '');
+  captureQuoteSafely(tab, info.selectionText || '');
 });
 
 chrome.commands.onCommand.addListener((command, tab) => {
-  if (command === 'capture-quote') void captureQuoteFromTab(tab);
+  if (command === 'capture-quote') captureQuoteSafely(tab);
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {

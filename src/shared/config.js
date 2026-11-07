@@ -91,6 +91,8 @@ export const JOB_STATE = Object.freeze({
  *
  * @typedef {object} CaptureJob
  * @property {string} id
+ * @property {string} [serverUrl] Server, fuer den erfasst wurde. Fehlt nur an
+ *   Auftraegen aus Versionen vor der Bindung; die gelten fuer den aktuellen.
  * @property {number} createdAt
  * @property {number} attempts
  * @property {number} runAfter
@@ -117,6 +119,9 @@ export const JOB_STATE = Object.freeze({
  *   Warteschlange immer leer, sie liegen in der Anhang-Ablage
  * @property {{screenshot: boolean, pdf: boolean}} [attachmentsDeclared] welche
  *   Anhaenge der Auftrag haben soll — Grundlage fuer `attachmentsLost`
+ * @property {boolean} [quoteApproximate] das Zitat stammt aus Chromes
+ *   `selectionText` (Leerraum zusammengefasst, ohne Zeilenumbrueche), nicht
+ *   aus der Seite — Grundlage fuer den gleichnamigen Vermerk in `progress`
  */
 
 /**
@@ -167,6 +172,7 @@ export const JOB_STATE = Object.freeze({
  * Quelle wurde dann ohne ihn angelegt (`409 CITEKEY_TAKEN`, Wiederholung ohne
  * das Feld) — festgehalten, damit die Quittung es sagen kann.
  * @property {string} [citekeyDropped]
+ * @property {boolean} [quoteApproximate] siehe `CaptureIntent.quoteApproximate`
  * @property {'capture'|'split'|null} via
  */
 

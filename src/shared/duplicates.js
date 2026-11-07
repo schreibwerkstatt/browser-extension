@@ -19,7 +19,7 @@
  *     statt Entwarnung zu geben.
  */
 
-import { RESEARCH_LIST } from './limits.js';
+import { RESEARCH_LIST, clampResearchLimit } from './limits.js';
 import { serverNormalizeUrl } from './url.js';
 
 /**
@@ -79,7 +79,7 @@ export function matchesForUrl(items, url) {
  * @param {object} input
  * @param {ResearchListItem[]} input.items Antwort von `GET /research`
  * @param {unknown} input.url zu pruefende Seiten-URL
- * @param {number|null} [input.limit] `limit`, das mitgeschickt wurde
+ * @param {unknown} [input.limit] `limit`, das mitgeschickt wurde
  * @param {boolean} [input.usedQuery] wurde `q` benutzt?
  * @returns {DuplicateReport}
  */
@@ -89,7 +89,10 @@ export function summarizeDuplicates({ items, url, limit = null, usedQuery = fals
 
   // Ein Treffer ist ein Treffer — der zaehlt auch aus einem abgeschnittenen
   // Ergebnis. Unvollstaendig ist nur die AUSSAGE, dass nichts da ist.
-  const effectiveLimit = limit === null ? RESEARCH_LIST.LIMIT_DEFAULT : limit;
+  // Geklemmt wie beim Server: 0, negativ oder Text -> Default, ueber dem
+  // Maximum -> Maximum. Sonst haelt ein `limit: 0` jede Liste fuer
+  // abgeschnitten und ein `limit: 1000` keine.
+  const effectiveLimit = clampResearchLimit(limit) ?? RESEARCH_LIST.LIMIT_DEFAULT;
 
   /** @type {'limit'|'fts'|null} */
   let truncatedBy = null;

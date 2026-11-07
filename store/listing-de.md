@@ -73,7 +73,7 @@ Deinstallieren löscht alles Lokale restlos.
 
 MIT-Lizenz. Der ausgelieferte Code ist nicht minifiziert und nicht obfuskiert; du kannst das Paket entpacken und Zeile für Zeile mit dem Repository vergleichen.
 
-Quellcode: https://github.com/bedeberger/schreibwerkstatt-browser-extension
+Quellcode: https://github.com/schreibwerkstatt/browser-extension
 ```
 
 > Die Repository-URL ist eingesetzt und das Repository ist öffentlich, der
@@ -225,7 +225,7 @@ Alle drei bestätigen — alle drei sind hier wahr:
 ### URL der Datenschutzerklärung
 
 ```
-https://github.com/bedeberger/schreibwerkstatt-browser-extension/blob/main/store/privacy-policy.de.md
+https://github.com/schreibwerkstatt/browser-extension/blob/main/store/privacy-policy.de.md
 ```
 
 > Pflichtfeld, sobald Nutzerdaten verarbeitet werden — hier also unvermeidbar.

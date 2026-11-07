@@ -93,6 +93,14 @@ export function parsePerson(raw) {
     if (typeof obj.literal === 'string' && collapse(obj.literal)) {
       return { literal: collapse(obj.literal) };
     }
+    // schema.org `Person` ohne `name`, nur mit `givenName`/`familyName`
+    // (`additionalName` ist der Zweitname und gehoert zum Vornamen).
+    const hasName = typeof obj.name === 'string' && collapse(obj.name);
+    if (!hasName) {
+      const familyName = schemaText(obj.familyName);
+      const givenName = [schemaText(obj.givenName), schemaText(obj.additionalName)].filter(Boolean).join(' ');
+      if (familyName || givenName) return parsePerson({ family: familyName, given: givenName });
+    }
     // Ein `@id` ist ein Verweis, kein Name — ausser er sieht nach einem aus.
     const id = typeof obj['@id'] === 'string' && !/[#/:]/.test(obj['@id']) ? obj['@id'] : '';
     const name = obj.name ?? id;
@@ -172,6 +180,16 @@ export function parsePerson(raw) {
 }
 
 /**
+ * Textwert eines schema.org-Feldes, das auch eine Liste sein darf.
+ * @param {unknown} value
+ * @returns {string}
+ */
+function schemaText(value) {
+  const entry = Array.isArray(value) ? value[0] : value;
+  return typeof entry === 'string' ? collapse(entry) : '';
+}
+
+/**
  * @param {string[]} tokens
  * @returns {string[]}
  */
@@ -233,8 +251,29 @@ export function parsePeople(input) {
     return dedupe(commaParts.flatMap((part) => parsePeople(part)));
   }
 
+  // Genau ein Komma: „Muster, Max" ist eine Person, „Anna Bertram, Carl
+  // Dorn" sind zwei. Getrennt wird nur, wenn BEIDE Seiten wie ein ganzer
+  // Name aussehen — mindestens zwei Woerter, kein Partikel, kein Suffix.
+  // „von Goethe, Johann Wolfgang" bleibt deshalb eine Person.
+  if (commaParts.length === 2 && commaParts.every(looksLikeFullName)) {
+    return dedupe(commaParts.flatMap((part) => parsePeople(part)));
+  }
+
   const person = parsePerson(value);
   return person ? [person] : [];
+}
+
+/**
+ * Sieht der Teil wie „Vorname Nachname" aus, nicht wie ein halber Name?
+ * @param {string} part
+ */
+function looksLikeFullName(part) {
+  const tokens = stripTitles(part.split(' '));
+  if (tokens.length < 2) return false;
+  return !tokens.some((token) => {
+    const lower = token.toLowerCase();
+    return PARTICLES.has(lower) || SUFFIXES.has(lower);
+  });
 }
 
 /**

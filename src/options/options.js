@@ -95,6 +95,22 @@ async function reload() {
   await renderPermissionState();
 }
 
+/**
+ * Fuehrt eine Aktion aus und zeigt jeden Fehler an — mit Code, wie ueberall.
+ * Ohne diese Huelle endete ein Fehler des Service Workers hier als
+ * unbehandelte Rejection, und der Nutzer saehe schlicht nichts.
+ *
+ * @param {() => Promise<void>} task
+ */
+function guarded(task) {
+  return () => {
+    task().catch((error) => {
+      showNotice(ui.connectionResult, errorText(error), 'error');
+      ui.connectionResult.scrollIntoView({ block: 'nearest' });
+    });
+  };
+}
+
 function wireEvents() {
   ui.serverUrl.addEventListener('input', () => {
     const normalized = normalizeServerUrl(ui.serverUrl.value);
@@ -126,24 +142,29 @@ function wireEvents() {
     ui.toggleToken.textContent = shown ? t('options_show_token') : t('options_hide_token');
   });
 
-  ui.saveConnection.addEventListener('click', () => void saveConnection());
-  ui.grantPermission.addEventListener('click', () => void requestPermission());
-  ui.testConnection.addEventListener('click', () => void testConnection());
+  ui.saveConnection.addEventListener('click', guarded(saveConnection));
+  ui.grantPermission.addEventListener('click', guarded(requestPermission));
+  ui.testConnection.addEventListener('click', guarded(testConnection));
 
-  ui.refreshBooks.addEventListener('click', () => void refreshBooks());
-  ui.defaultBook.addEventListener('change', () => void setDefaultBook());
+  ui.refreshBooks.addEventListener('click', guarded(refreshBooks));
+  ui.defaultBook.addEventListener('change', guarded(setDefaultBook));
 
-  ui.saveSettings.addEventListener('click', () => void saveSettings());
+  ui.saveSettings.addEventListener('click', guarded(saveSettings));
 
-  ui.capCaptureMode.addEventListener('change', () =>
-    void setCapabilityMode('capture', ui.capCaptureMode.value),
+  ui.capCaptureMode.addEventListener(
+    'change',
+    guarded(() => setCapabilityMode('capture', ui.capCaptureMode.value)),
   );
-  ui.capByUrlMode.addEventListener('change', () => void setCapabilityMode('byUrl', ui.capByUrlMode.value));
-  ui.capResearchMode.addEventListener('change', () =>
-    void setCapabilityMode('researchList', ui.capResearchMode.value),
+  ui.capByUrlMode.addEventListener(
+    'change',
+    guarded(() => setCapabilityMode('byUrl', ui.capByUrlMode.value)),
+  );
+  ui.capResearchMode.addEventListener(
+    'change',
+    guarded(() => setCapabilityMode('researchList', ui.capResearchMode.value)),
   );
 
-  ui.flushQueue.addEventListener('click', () => void flushQueue());
+  ui.flushQueue.addEventListener('click', guarded(flushQueue));
 }
 
 // ------------------------------------------------------------------ Verbindung
@@ -164,10 +185,23 @@ async function saveConnection() {
   // Unveraendertes Maskenfeld bedeutet: Token bleibt, wie es ist.
   const token = ui.token.dataset.untouched === 'true' ? '' : ui.token.value.trim();
 
+  // Berechtigung gleich mit anfordern — VOR dem ersten `await`, denn Chrome
+  // verlangt dafuer die Nutzergeste dieses Klicks. Ohne sie scheiterte spaeter
+  // jeder Aufruf an CORS und saehe aus wie „keine Verbindung".
+  const pattern = toOriginPattern(serverUrl);
+  const permission = pattern
+    ? chrome.permissions.request({ origins: [pattern] }).catch(() => false)
+    : Promise.resolve(true);
+
   try {
     const result = await send(MSG.SAVE_CREDENTIALS, { serverUrl, token });
     ui.serverUrl.value = result.serverUrl;
-    showNotice(ui.connectionResult, t('options_saved'), 'success');
+    const granted = await permission;
+    showNotice(
+      ui.connectionResult,
+      granted ? t('options_saved') : t('options_permission_denied'),
+      granted ? 'success' : 'error',
+    );
     await reload();
   } catch (error) {
     showNotice(ui.connectionResult, errorText(error), 'error');
@@ -286,7 +320,7 @@ function renderBooks() {
     const name = document.createElement('span');
     name.textContent = book.name;
     const meta = document.createElement('span');
-    meta.textContent = [t(`role_${book.role}`) || book.role, book.buchtyp, book.owner_email]
+    meta.textContent = [roleLabel(book.role), book.buchtyp, book.owner_email]
       .filter(Boolean)
       .join(' · ');
     item.append(name, meta);
@@ -300,6 +334,19 @@ function renderBooks() {
   ui.booksMeta.textContent = state.booksFetchedAt
     ? t('options_books_fetched', [formatRelativeTime(state.booksFetchedAt)])
     : t('options_books_never');
+}
+
+/**
+ * `t` liefert bei fehlendem Schluessel den Schluessel selbst zurueck — ein
+ * `|| book.role` griffe also nie, und eine unbekannte Rolle stuende als
+ * `role_xyz` da.
+ *
+ * @param {string} role
+ */
+function roleLabel(role) {
+  const key = `role_${role}`;
+  const label = t(key);
+  return label && label !== key ? label : role;
 }
 
 async function refreshBooks() {
@@ -433,13 +480,13 @@ function renderQueue() {
     retry.type = 'button';
     retry.className = 'button button--ghost';
     retry.textContent = t('options_queue_retry');
-    retry.addEventListener('click', () => void retryJob(job.id));
+    retry.addEventListener('click', guarded(() => retryJob(job.id)));
 
     const discard = document.createElement('button');
     discard.type = 'button';
     discard.className = 'button button--ghost button--danger';
     discard.textContent = t('options_queue_discard');
-    discard.addEventListener('click', () => void discardJob(job.id, job.intent.title));
+    discard.addEventListener('click', guarded(() => discardJob(job.id, job.intent.title)));
 
     actions.append(retry, discard);
     item.append(actions);
@@ -485,4 +532,4 @@ function flash(node) {
   }, 1600);
 }
 
-void init();
+guarded(init)();

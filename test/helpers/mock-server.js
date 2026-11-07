@@ -22,9 +22,17 @@
  *    globalen Express-Fehler-Handler.
  *  - **Der Parser gewinnt gegen die Route.** PDF-Limit und Parser-Limit liegen
  *    beide bei 25 MB, also ist `DOC_TOO_LARGE` in der Praxis unerreichbar.
+ *
+ * Seit Vertrag api 6 (Mutterprojekt `contract/CHANGELOG.md`) dazu: Textfelder
+ * werden weiter still gekuerzt, **URLs aber abgewiesen** (`INVALID_URL` mit
+ * `params.max`), falsche Feldtypen ebenso (`INVALID_FIELD`). `POST /research`
+ * antwortet auf eine schon erfasste URL mit `409 DUPLICATE_URL`, uebersteuerbar
+ * mit `allow_duplicate: true`.
  */
 
 import { createServer } from 'node:http';
+
+import { serverNormalizeUrl } from '../../src/shared/url.js';
 
 /**
  * @typedef {object} MockOptions
@@ -204,13 +212,29 @@ export async function startMockServer(options = {}) {
       if (!payload.book_id) return send(res, 400, { error_code: 'BOOKID_REQ' });
       const acl = bookAcl(payload.book_id, 'editor');
       if (acl) return send(res, 403, acl);
+      // Erst die strikte Eingangspruefung — Typ und URLs werden ABGEWIESEN.
+      const bad = textFieldsError(payload) || urlsError(payload.urls);
+      if (bad) return send(res, 400, bad);
       // Titel und Text werden STILL GEKUERZT, nicht abgelehnt. Genau deshalb
       // muss der Client vorher kuerzen: sonst quittiert er einen Text, der so
-      // nie gespeichert wurde.
-      if (!payload.title && !payload.body && !payload.source) {
+      // nie gespeichert wurde. Als URL zaehlt fuer EMPTY nur `urls[]`.
+      const urls = Array.isArray(payload.urls) ? payload.urls : [];
+      const hasUrl = urls.some((entry) => entry && entry.url);
+      if (!payload.title && !payload.body && !hasUrl) {
         return send(res, 400, { error_code: 'EMPTY' });
       }
-      const stored = clampLikeServer(payload);
+      if (hasUrl && payload.allow_duplicate !== true) {
+        const existing = findResearchByUrl(Number(payload.book_id), urls.map((entry) => entry.url));
+        if (existing) {
+          return send(res, 409, {
+            error_code: 'DUPLICATE_URL',
+            existing_id: existing.id,
+            params: { existing_id: existing.id, title: existing.title ?? null },
+          });
+        }
+      }
+      const { allow_duplicate: _allow, ...rest } = payload;
+      const stored = clampLikeServer(rest);
       const id = state.nextId++;
       state.researchItems.set(id, stored);
       return send(res, 201, { id, ...stored });
@@ -324,9 +348,14 @@ export async function startMockServer(options = {}) {
           params: { field: 'mode', allowed: [...CAPTURE_MODES].join(',') },
         });
       }
-      if (!payload.url) return send(res, 400, { error_code: 'INVALID_URL' });
+      // Abgewiesen, nie gekuerzt — auch eine zu lange URL.
+      if (!payload.url || !/^https?:\/\//i.test(payload.url) || payload.url.length > URL_MAX) {
+        return send(res, 400, { error_code: 'INVALID_URL', params: { max: URL_MAX } });
+      }
       const acl = bookAcl(payload.book_id, 'editor');
       if (acl) return send(res, 403, acl);
+      const badField = textFieldsError(payload);
+      if (badField) return send(res, 400, badField);
       if (payload.csl_type && !CSL_TYPES.has(payload.csl_type)) {
         return send(res, 400, {
           error_code: 'INVALID_VALUE',
@@ -387,11 +416,12 @@ export async function startMockServer(options = {}) {
     return sendNotARoute(res);
   }
 
-  /** Die elf `csl_type`-Werte des Vertrags. */
+  /** Die zwoelf `csl_type`-Werte des Vertrags (`newspaper` seit v4.14.0). */
   const CSL_TYPES = new Set([
     'book',
     'chapter',
     'article',
+    'newspaper',
     'website',
     'thesis',
     'report',
@@ -438,9 +468,64 @@ export async function startMockServer(options = {}) {
     return null;
   }
 
+  const URL_MAX = 2000;
+
+  /**
+   * `INVALID_FIELD`: `title`/`body`/`source` muss fehlen, `null` oder String sein.
+   * @param {Record<string, any>} payload
+   */
+  function textFieldsError(payload) {
+    for (const field of ['title', 'body', 'source']) {
+      const value = payload[field];
+      if (value !== undefined && value !== null && typeof value !== 'string') {
+        return { error_code: 'INVALID_FIELD', params: { field } };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * `urls[]` von `POST /research`: jede URL http(s) und hoechstens 2000
+   * Zeichen, sonst wird der GANZE Request abgewiesen.
+   * @param {unknown} urls
+   */
+  function urlsError(urls) {
+    if (urls === undefined || urls === null) return null;
+    if (!Array.isArray(urls)) return { error_code: 'INVALID_FIELD', params: { field: 'urls' } };
+    for (const entry of urls) {
+      const value = typeof entry === 'string' ? entry : entry && entry.url;
+      if (!value) continue;
+      if (!/^https?:\/\//i.test(value) || value.length > URL_MAX) {
+        return { error_code: 'INVALID_URL', params: { max: URL_MAX } };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Fundstueck desselben Buchs, an dem eine dieser URLs schon haengt —
+   * verglichen nach den Normalisierungsregeln des Servers.
+   * @param {number} bookId
+   * @param {string[]} urls
+   */
+  function findResearchByUrl(bookId, urls) {
+    const wanted = new Set(urls.map((value) => serverNormalizeUrl(value) || value));
+    for (const [id, item] of state.researchItems) {
+      if (Number(item.book_id) !== bookId) continue;
+      const own = [
+        ...(Array.isArray(item.urls) ? item.urls.map((entry) => entry.url) : []),
+        ...(item.url ? [item.url] : []),
+      ];
+      if (own.some((value) => wanted.has(serverNormalizeUrl(value) || value))) {
+        return { id, title: item.title };
+      }
+    }
+    return null;
+  }
+
   /**
    * Kuerzt so, wie der Server kuerzt: still, ohne Fehler, ohne Hinweis in der
-   * Antwort. Der Mock tut das ausdruecklich mit, damit ein Test zeigen kann,
+   * Antwort. URLs gehoeren nicht dazu — die weist der Server ab. Der Mock tut das ausdruecklich mit, damit ein Test zeigen kann,
    * was gespeichert wurde — und nicht nur, was gesendet wurde.
    *
    * @param {Record<string, any>} payload
@@ -451,11 +536,10 @@ export async function startMockServer(options = {}) {
     next.title = cut(next.title, 300);
     next.body = cut(next.body, 20000);
     next.source = cut(next.source, 1000);
-    next.url = cut(next.url, 2000);
     if (Array.isArray(next.tags)) next.tags = next.tags.slice(0, 20).map((tag) => cut(tag, 60));
     if (Array.isArray(next.urls)) {
       next.urls = next.urls.slice(0, 20).map((entry) => ({
-        url: cut(entry.url, 2000),
+        url: entry.url,
         label: cut(entry.label || '', 300),
       }));
     }

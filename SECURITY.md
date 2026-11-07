@@ -5,7 +5,7 @@
 **Bitte nicht über ein öffentliches Issue.** Nutze stattdessen die private
 Meldefunktion von GitHub:
 
-→ [Security → Report a vulnerability](https://github.com/bedeberger/schreibwerkstatt-browser-extension/security/advisories/new)
+→ [Security → Report a vulnerability](https://github.com/schreibwerkstatt/browser-extension/security/advisories/new)
 
 Damit landet die Meldung in einem privaten Advisory, das nur du und ich sehen,
 bis ein Fix bereitsteht.

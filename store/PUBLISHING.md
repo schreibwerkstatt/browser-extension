@@ -220,7 +220,7 @@ einer **öffentlich erreichbaren, dauerhaften** URL stehen.
 Weil das Repository öffentlich ist, ist der kürzeste Weg schon gangbar:
 
 ```
-https://github.com/bedeberger/schreibwerkstatt-browser-extension/blob/main/store/privacy-policy.de.md
+https://github.com/schreibwerkstatt/browser-extension/blob/main/store/privacy-policy.de.md
 ```
 
 Kein Setup, GitHub rendert das Markdown, der Link bleibt stabil, solange die
@@ -235,7 +235,7 @@ stört:
    dieselbe Domain, die im Eintrag als Server-Beispiel auftaucht.
 2. **GitHub Pages** für dieses Repo einschalten (Settings → Pages, Quelle
    `main`). Die Datei liegt dann als eigene Seite unter
-   `bedeberger.github.io/schreibwerkstatt-browser-extension/store/privacy-policy.de`
+   `schreibwerkstatt.github.io/browser-extension/store/privacy-policy.de`
    — sauberer, aber ein Schritt mehr.
 
 Nicht geeignet: alles, was einen Login braucht, ablaufen kann oder nur über einen
@@ -510,9 +510,9 @@ zurücknehmbar.
 3. **OAuth-Zustimmungsbildschirm** einrichten, Nutzertyp „Extern", Scope
    `https://www.googleapis.com/auth/chromewebstore`.
 4. **OAuth-Client-ID** vom Typ **„Desktop-App"** erzeugen → `client_id` und
-   `client_secret`. Der Typ ist nicht beliebig: nur er darf auf
-   `http://localhost` mit beliebigem Port zurückleiten, und genau das braucht
-   `npm run store:auth`.
+   `client_secret`. Der Typ ist nicht beliebig: nur er darf auf die
+   Loopback-Adresse `http://127.0.0.1` mit beliebigem Port zurückleiten, und
+   genau das braucht `npm run store:auth` (mit `state` und PKCE).
 5. Die drei Werte nach `~/.config/schreibwerkstatt-cws.json` schreiben:
 
    ```json

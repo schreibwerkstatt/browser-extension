@@ -144,6 +144,23 @@ describe('parsePeople: Listen', () => {
     assert.deepEqual(parsePeople('Muster, Max'), [{ family: 'Muster', given: 'Max' }]);
   });
 
+  it('ein Komma zwischen zwei ganzen Namen trennt zwei Personen', () => {
+    assert.deepEqual(parsePeople('Anna Bertram, Carl Dorn'), [
+      { family: 'Bertram', given: 'Anna' },
+      { family: 'Dorn', given: 'Carl' },
+    ]);
+  });
+
+  it('ein Komma mit Partikel, Suffix oder halbem Namen bleibt eine Person', () => {
+    assert.deepEqual(parsePeople('von Goethe, Johann Wolfgang'), [
+      { family: 'von Goethe', given: 'Johann Wolfgang' },
+    ]);
+    assert.deepEqual(parsePeople('Muster, Max Johann'), [{ family: 'Muster', given: 'Max Johann' }]);
+    assert.deepEqual(parsePeople('Muster, Dr. Max'), [{ family: 'Muster', given: 'Max' }]);
+    assert.equal(parsePeople('Jan van der Meer, Anna Bertram').length, 1);
+    assert.equal(parsePeople('Max Muster, Jr. Senior').length, 1);
+  });
+
   it('„Nachname, Vorname"-Paare in einer Kommakette', () => {
     assert.deepEqual(parsePeople('Muster, Max, Beispiel, Eva'), [
       { family: 'Muster', given: 'Max' },
@@ -187,6 +204,24 @@ describe('Rueckwandlung', () => {
 });
 
 describe('JSON-LD-Verweise', () => {
+  it('bildet eine Person mit givenName/familyName ohne name ab', () => {
+    assert.deepEqual(parsePeople({ '@type': 'Person', givenName: 'Anna', familyName: 'Bertram' }), [
+      { family: 'Bertram', given: 'Anna' },
+    ]);
+    assert.deepEqual(
+      parsePeople({ '@type': 'Person', givenName: 'Anna', additionalName: 'Maria', familyName: 'Bertram' }),
+      [{ family: 'Bertram', given: 'Anna Maria' }],
+    );
+    assert.deepEqual(parsePeople({ '@type': 'Person', familyName: 'Bertram' }), [{ family: 'Bertram', given: '' }]);
+    assert.deepEqual(parsePeople({ '@type': 'Person', givenName: 'Anna' }), [{ literal: 'Anna' }]);
+  });
+
+  it('ein vorhandener name hat Vorrang vor givenName/familyName', () => {
+    assert.deepEqual(parsePeople({ '@type': 'Person', name: 'Carl Dorn', givenName: 'X', familyName: 'Y' }), [
+      { family: 'Dorn', given: 'Carl' },
+    ]);
+  });
+
   it('macht aus einem unaufgeloesten @id-Verweis keinen Namen', () => {
     assert.deepEqual(parsePeople({ '@type': 'Person', '@id': 'https://blog.example.com/#/schema/person/4711' }), []);
   });

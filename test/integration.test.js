@@ -376,12 +376,65 @@ describe('Erfassung: Fallback-Pfad (ohne /capture)', () => {
   it('mode=both legt beides an', async () => {
     const { api } = makeClient(server);
     const before = server.calls('POST /research').length;
-    const job = makeJob(baseIntent({ mode: 'both' }), 'job_both');
+    const job = makeJob(
+      baseIntent({
+        mode: 'both',
+        url: 'https://press.example.org/articles/beides',
+        normalizedUrl: 'https://press.example.org/articles/beides',
+        urls: [],
+      }),
+      'job_both',
+    );
     await runCaptureJob(job, { api, capabilities: caps });
 
     assert.equal(server.calls('POST /research').length, before + 1);
     assert.ok(job.progress.researchItemId);
     assert.ok(job.progress.sourceId);
+  });
+
+  it('409 DUPLICATE_URL: zweites Zitat derselben Seite wird mit allow_duplicate nachgesendet', async () => {
+    // Seit Server v4.15.0 lehnt POST /research eine schon erfasste URL ab.
+    // Zwei Zitate aus derselben Seite sind zwei Funde — wie bei /capture.
+    const { api } = makeClient(server);
+    const intent = baseIntent({
+      mode: 'research',
+      url: 'https://press.example.org/articles/doppelt',
+      normalizedUrl: 'https://press.example.org/articles/doppelt',
+      urls: [{ url: 'https://press.example.org/articles/doppelt', label: '' }],
+    });
+    await runCaptureJob(makeJob(intent, 'job_dup_1'), { api, capabilities: caps });
+
+    const before = server.calls('POST /research').length;
+    const second = makeJob({ ...intent, body: 'Ein anderes Zitat von derselben Seite.' }, 'job_dup_2');
+    await runCaptureJob(second, { api, capabilities: caps });
+
+    const calls = server.calls('POST /research').slice(before);
+    assert.equal(calls.length, 2);
+    // Erster Anlauf OHNE das Feld — ein aelterer Server bekommt es nie zu sehen.
+    assert.equal(calls[0].body.allow_duplicate, undefined);
+    assert.equal(calls[1].body.allow_duplicate, true);
+    assert.ok(second.progress.researchItemId);
+    assert.equal(second.progress.researchCreated, true);
+  });
+
+  it('eine URL ueber 2000 Zeichen wird abgelehnt, nicht gekuerzt — und nie gesendet', async () => {
+    const { api } = makeClient(server);
+    const long = `https://press.example.org/${'a'.repeat(2100)}`;
+    const before = server.log.length;
+    await assert.rejects(
+      runCaptureJob(
+        makeJob(baseIntent({ mode: 'research', urls: [{ url: long, label: '' }] }), 'job_long_url'),
+        { api, capabilities: caps },
+      ),
+      (error) => {
+        const err = /** @type {any} */ (error);
+        assert.equal(err.code, 'CLIENT_VALIDATION_FAILED');
+        assert.equal(err.params.rule, 'validation_url_too_long');
+        assert.equal(isRetryable(err), false);
+        return true;
+      },
+    );
+    assert.equal(server.log.length, before);
   });
 
   it('bei CITEKEY_TAKEN wird ohne citekey erneut gesendet', async () => {
@@ -764,6 +817,45 @@ describe('Erfassung: /capture-Pfad', () => {
       // Nichts gesendet: der Wortlaut haette dabei Schaden genommen.
       assert.equal(server.calls('POST /capture').length, 0);
       assert.equal(server.calls('POST /research').length, 0);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('mode=source: eine zu lange `url` wird auch hier vorher abgelehnt', async () => {
+    // `validateResearchPayload` laeuft im Quellen-Modus nicht — die Adress-
+    // pruefung muss trotzdem greifen, denn `/capture` weist sie ab (api 6).
+    const server = await startMockServer({ hasCapture: true });
+    try {
+      const { api } = makeClient(server);
+      const intent = baseIntent({ mode: 'source' });
+      intent.source = { ...intent.source, url: `https://press.example.org/${'a'.repeat(2100)}` };
+      const job = makeJob(intent, 'job_quelle_lang');
+
+      await assert.rejects(() => runCaptureJob(job, { api, capabilities: { capture: true, byUrl: false } }), {
+        code: 'CLIENT_VALIDATION_FAILED',
+      });
+      assert.equal(server.calls('POST /capture').length, 0);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('der Mock spiegelt api 6: /capture weist eine zu lange URL mit INVALID_URL ab', async () => {
+    // Gegenprobe, dass die Attrappe den Vertrag kennt — sonst waere der Test
+    // darueber wertlos.
+    const server = await startMockServer({ hasCapture: true });
+    try {
+      const { api } = makeClient(server);
+      await assert.rejects(
+        () => api.capture({ book_id: 1, mode: 'research', url: `https://example.org/${'a'.repeat(2100)}`, title: 'T' }),
+        (error) => {
+          const err = /** @type {any} */ (error);
+          assert.equal(err.code, 'INVALID_URL');
+          assert.equal(err.params.max, 2000);
+          return true;
+        },
+      );
     } finally {
       await server.close();
     }

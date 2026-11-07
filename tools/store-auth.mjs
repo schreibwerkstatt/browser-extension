@@ -3,15 +3,21 @@
  *
  *   npm run store:auth
  *
- * Startet einen Server auf `localhost`, oeffnet den Zustimmungsbildschirm,
+ * Startet einen Server auf `127.0.0.1`, oeffnet den Zustimmungsbildschirm,
  * faengt den Autorisierungs-Code auf und schreibt das Refresh-Token in
  * `~/.config/schreibwerkstatt-cws.json` (Rechte 600, nie ins Repository).
  *
  * Der Loopback-Weg ist noetig, weil der frueher ueebliche
  * `urn:ietf:wg:oauth:2.0:oob`-Fluss („Code abschreiben") von Google
  * abgeschaltet ist. Fuer einen OAuth-Client des Typs „Desktop-App" ist jeder
- * `http://localhost`-Port ohne Voranmeldung zugelassen — die Portnummer muss
- * also nirgends eingetragen werden.
+ * Port auf der Loopback-Adresse `http://127.0.0.1` ohne Voranmeldung
+ * zugelassen — die Portnummer muss also nirgends eingetragen werden. Die
+ * IP-Form statt `localhost`, weil der Server nur auf IPv4 lauscht und
+ * `localhost` im Browser auch `::1` sein kann.
+ *
+ * Abgesichert mit `state` (eine fremde Seite kann den Loopback-Port ebenfalls
+ * aufrufen — ohne den richtigen Wert bricht der Befehl ab) und PKCE/S256 (der
+ * `code_verifier` verlaesst den Prozess erst beim Code-Tausch).
  *
  * Ein einziges Mal noetig. Danach lebt das Token, **solange der
  * Zustimmungsbildschirm auf „In Produktion" steht**; im Status „Testing"
@@ -24,7 +30,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  assertOutsideRepo, authUrl, exchangeCode, missingFields, readConfig, updateConfig,
+  assertOutsideRepo, authUrl, exchangeCode, loopbackRedirectUri, missingFields, newState,
+  pkcePair, readCallback, readConfig, updateConfig,
 } from './lib/cws.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -59,24 +66,40 @@ function openBrowser(url) {
 /**
  * Wartet auf die Weiterleitung des Zustimmungsbildschirms.
  *
+ * Jede Anfrage beendet den Server — auch eine mit falschem `state`. Weiter zu
+ * warten hiesse, einem Angreifer beliebig viele Versuche zu lassen; abbrechen
+ * und neu starten kostet nur einen Klick.
+ *
  * @param {string} redirectUri
+ * @param {string} expectedState
  * @returns {Promise<string>} der Autorisierungs-Code
  */
-function waitForCode(redirectUri) {
+function waitForCode(redirectUri, expectedState) {
   return new Promise((resolvePromise, rejectPromise) => {
     const server = createServer((request, response) => {
-      const url = new URL(request.url, redirectUri);
-      const code = url.searchParams.get('code');
-      const error = url.searchParams.get('error');
+      const url = new URL(request.url ?? '/', redirectUri);
+      // Browser holen gern ungefragt /favicon.ico — das ist keine Weiterleitung.
+      if (url.pathname !== '/') {
+        response.writeHead(404).end();
+        return;
+      }
 
-      response.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
-      response.end(code
-        ? 'Angemeldet. Fenster kann geschlossen werden.\n'
-        : `Abgebrochen: ${error ?? 'kein Code in der Weiterleitung'}\n`);
+      let code;
+      let failure;
+      try {
+        code = readCallback(url.searchParams, expectedState);
+      } catch (error) {
+        failure = error;
+      }
+
+      response.writeHead(failure ? 400 : 200, { 'content-type': 'text/plain; charset=utf-8' });
+      response.end(failure
+        ? `${failure.message}\n`
+        : 'Angemeldet. Fenster kann geschlossen werden.\n');
 
       server.close();
-      if (code) resolvePromise(code);
-      else rejectPromise(new Error(error ?? 'Weiterleitung ohne Code.'));
+      if (failure) rejectPromise(failure);
+      else resolvePromise(code);
     });
 
     server.on('error', rejectPromise);
@@ -109,8 +132,12 @@ if (config.refreshToken) {
   say('Hinweis: es liegt schon ein Refresh-Token. Es wird jetzt ersetzt.\n');
 }
 
-const redirectUri = `http://localhost:${PORT}`;
-const url = authUrl({ clientId: config.clientId, redirectUri });
+const redirectUri = loopbackRedirectUri(PORT);
+const state = newState();
+const pkce = pkcePair();
+const url = authUrl({
+  clientId: config.clientId, redirectUri, state, codeChallenge: pkce.challenge,
+});
 
 say('Zustimmungsbildschirm wird geoeffnet. Falls nichts passiert, diese Adresse');
 say('von Hand aufrufen:\n');
@@ -122,7 +149,7 @@ openBrowser(url);
 
 let code;
 try {
-  code = await waitForCode(redirectUri);
+  code = await waitForCode(redirectUri, state);
 } catch (error) {
   fail(error.code === 'EADDRINUSE'
     ? `Port ${PORT} ist belegt. Mit CWS_AUTH_PORT einen anderen waehlen.`
@@ -136,6 +163,7 @@ try {
     clientId: config.clientId,
     clientSecret: config.clientSecret,
     redirectUri,
+    codeVerifier: pkce.verifier,
   });
 } catch (error) {
   fail(error.message);

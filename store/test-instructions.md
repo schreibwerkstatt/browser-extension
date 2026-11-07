@@ -129,7 +129,7 @@ Companion to a self-hosted app; no bundled backend, so it needs a server. Public
 Options page > Server https://demo.schreibwerkstatt.app > Token swd_a053dcf5c8a40ff401d627be20ffed97f1af2598808ad70799913811f7780010 > Save > "Grant access to this host" > "Test connection" > pick a book. Then open an article, click the icon, press Send.
 
 Full steps, web-app login, review notes:
-github.com/bedeberger/schreibwerkstatt-browser-extension/blob/main/store/REVIEW.md
+github.com/schreibwerkstatt/browser-extension/blob/main/store/REVIEW.md
 ```
 
 Die Begründungen — kein Remote Code, kein `<all_urls>`, `activeTab` nur bei
@@ -231,7 +231,7 @@ NOTES FOR REVIEW
   Apart from relative API paths, the package contains no hardcoded address.
 - There is no persistent content script. The harvesting script is injected via
   activeTab at the moment of a user action only.
-- Source code: https://github.com/bedeberger/schreibwerkstatt-browser-extension
+- Source code: https://github.com/schreibwerkstatt/browser-extension
 
 Contact for questions during review: bede.berger@gmail.com
 ```
@@ -353,7 +353,7 @@ NOTES FOR REVIEW
   verifiable by grepping the package for "http".
 - There is no persistent content script. The harvesting script is injected via
   activeTab at the moment of a user action only.
-- Source code: https://github.com/bedeberger/schreibwerkstatt-browser-extension
+- Source code: https://github.com/schreibwerkstatt/browser-extension
 
 I am glad to answer any question that would help the review.
 Contact: bede.berger@gmail.com

@@ -5,7 +5,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { guessCslType, harvestMetadata } from '../src/content/extract-meta.js';
+import {
+  collectJsonLdNodes,
+  guessCslType,
+  harvestMetadata,
+  pickJsonLdArticle,
+  plausibleCanonical,
+} from '../src/content/extract-meta.js';
 import { splitTitleAffix, stripTitleAffix } from '../src/content/title-affix.js';
 import { harvestBylineNames } from '../src/content/byline.js';
 import { JSDOM } from 'jsdom';
@@ -593,3 +599,148 @@ describe('Ernte: Profil-URL, Handle und E-Mail sind keine Personen', () => {
     assert.equal(meta.authors.length, 1);
   });
 });
+
+/**
+ * @param {string} url
+ * @param {string} head
+ * @param {string} [body]
+ */
+function inlineDoc(url, head, body = '') {
+  const html = `<!doctype html><html><head><title>Beitrag</title>${head}</head><body>${body}</body></html>`;
+  return new JSDOM(html, { url, contentType: 'text/html' }).window.document;
+}
+
+describe('Kanonische Adresse auf Plausibilitaet pruefen', () => {
+  const url = 'https://blog.schreibwerkstatt.example.com/2024/artikel-a';
+
+  it('verwirft rel=canonical auf die Startseite', () => {
+    const meta = harvestMetadata(inlineDoc(url, '<link rel="canonical" href="/" />'), { url, now: FIXED_NOW });
+    assert.equal(meta.canonicalUrl, '');
+    assert.equal(meta.provenance.canonicalUrl, undefined);
+    assert.equal(meta.normalizedUrl, 'https://blog.schreibwerkstatt.example.com/2024/artikel-a');
+  });
+
+  it('verwirft einen Praefix-Pfad und einen fremden Host, nimmt dann die naechste Schicht', () => {
+    const meta = harvestMetadata(
+      inlineDoc(
+        url,
+        `<meta property="og:url" content="https://blog.schreibwerkstatt.example.com/2024/" />
+         <link rel="canonical" href="https://www.blog.schreibwerkstatt.example.com/2024/artikel-a/" />`,
+      ),
+      { url, now: FIXED_NOW },
+    );
+    assert.equal(meta.canonicalUrl, 'https://www.blog.schreibwerkstatt.example.com/2024/artikel-a/');
+    assert.equal(meta.provenance.canonicalUrl, 'fallback');
+  });
+
+  it('plausibleCanonical im Einzelnen', () => {
+    assert.equal(plausibleCanonical('https://andere.example.com/2024/artikel-a', url), null);
+    assert.equal(plausibleCanonical('https://blog.schreibwerkstatt.example.com/', url), null);
+    assert.equal(plausibleCanonical('https://blog.schreibwerkstatt.example.com/2024', url), null);
+    // Gleiche Tiefe, anderer Pfad (umbenannter Slug): bleibt.
+    const renamed = 'https://blog.schreibwerkstatt.example.com/2024/artikel-a-neu';
+    assert.equal(plausibleCanonical(renamed, url), renamed);
+    // Nur Praefix auf Zeichenebene, nicht auf Segmentebene: bleibt.
+    const longer = 'https://blog.schreibwerkstatt.example.com/2024/artikel';
+    assert.equal(plausibleCanonical(longer, url), longer);
+    assert.equal(plausibleCanonical(longer, 'https://blog.schreibwerkstatt.example.com/2024/artikel-a/teil-2'), longer);
+    // Echter Segment-Praefix eines tieferen Pfads: verworfen.
+    assert.equal(plausibleCanonical(url, `${url}/teil-2`), null);
+    // Startseite auf der Startseite ist in Ordnung.
+    const root = 'https://schreibwerkstatt.example.com/';
+    assert.equal(plausibleCanonical(root, 'https://www.schreibwerkstatt.example.com/?ref=x'), root);
+    assert.equal(plausibleCanonical(null, url), null);
+  });
+
+  it('verwirft auch eine JSON-LD-url auf die Startseite', () => {
+    const meta = harvestMetadata(
+      inlineDoc(
+        url,
+        `<script type="application/ld+json">${JSON.stringify({
+          '@type': 'BlogPosting',
+          headline: 'Artikel A',
+          url: 'https://blog.schreibwerkstatt.example.com/',
+        })}</script>`,
+      ),
+      { url, now: FIXED_NOW },
+    );
+    assert.equal(meta.title, 'Artikel A');
+    assert.equal(meta.canonicalUrl, '');
+  });
+});
+
+describe('JSON-LD: der Artikel der Seite, nicht ein verwandter', () => {
+  const url = 'https://schreibwerkstatt.example.com/2024/artikel-a';
+
+  it('bevorzugt den Artikel auf oberster Ebene vor einem aus hasPart', () => {
+    const data = {
+      '@type': 'CollectionPage',
+      hasPart: [{ '@type': 'NewsArticle', headline: 'Verwandt' }],
+    };
+    const own = { '@type': 'NewsArticle', headline: 'Eigener Artikel' };
+    const doc = inlineDoc(
+      url,
+      `<script type="application/ld+json">${JSON.stringify(data)}</script>
+       <script type="application/ld+json">${JSON.stringify(own)}</script>`,
+    );
+    assert.equal(pickJsonLdArticle(collectJsonLdNodes(doc), url)?.headline, 'Eigener Artikel');
+    assert.equal(harvestMetadata(doc, { url, now: FIXED_NOW }).title, 'Eigener Artikel');
+  });
+
+  it('nimmt unter mehreren den, dessen url zur Seite passt', () => {
+    const graph = {
+      '@graph': [
+        { '@type': 'Article', headline: 'Andere Seite', url: 'https://schreibwerkstatt.example.com/2024/artikel-b' },
+        {
+          '@type': 'Article',
+          headline: 'Diese Seite',
+          mainEntityOfPage: { '@type': 'WebPage', '@id': 'https://www.schreibwerkstatt.example.com/2024/artikel-a/' },
+        },
+      ],
+    };
+    const doc = inlineDoc(url, `<script type="application/ld+json">${JSON.stringify(graph)}</script>`);
+    assert.equal(pickJsonLdArticle(collectJsonLdNodes(doc), url)?.headline, 'Diese Seite');
+    // Ohne Seiten-URL: der erste, wie bisher.
+    assert.equal(pickJsonLdArticle(collectJsonLdNodes(doc))?.headline, 'Andere Seite');
+  });
+
+  it('ein verschachtelter Artikel genuegt, wenn es keinen anderen gibt', () => {
+    const page = { '@type': 'WebPage', mainEntity: { '@type': 'Article', headline: 'Hauptinhalt' } };
+    const doc = inlineDoc(url, `<script type="application/ld+json">${JSON.stringify(page)}</script>`);
+    assert.equal(pickJsonLdArticle(collectJsonLdNodes(doc), url)?.headline, 'Hauptinhalt');
+  });
+});
+
+describe('DOI und ISBN nur aus sichtbarem Text', () => {
+  const url = 'https://schreibwerkstatt.example.com/2024/artikel-a';
+
+  it('ignoriert script, style, noscript, template und nav', () => {
+    const doc = inlineDoc(
+      url,
+      '',
+      `<script>var cfg = { doi: "10.1234/aus-dem-skript" };</script>
+       <style>/* 10.1234/aus-dem-stylesheet */</style>
+       <noscript>doi:10.1234/aus-noscript ISBN 978-3-16-148410-0</noscript>
+       <template><p>10.1234/aus-template</p></template>
+       <nav>Siehe 10.1234/aus-der-navigation</nav>
+       <p>Kein Bezeichner hier.</p>`,
+    );
+    const meta = harvestMetadata(doc, { url, now: FIXED_NOW });
+    assert.equal(meta.doi, '');
+    assert.equal(meta.isbn, '');
+  });
+
+  it('findet sie weiterhin im Fliesstext', () => {
+    const doc = inlineDoc(
+      url,
+      '',
+      '<script>10.1234/falsch</script><p>doi:10.5555/richtig, ISBN 978-3-16-148410-0</p>',
+    );
+    const meta = harvestMetadata(doc, { url, now: FIXED_NOW });
+    assert.equal(meta.doi, '10.5555/richtig');
+    assert.equal(meta.isbn, '9783161484100');
+    // Das Seiten-DOM bleibt unberuehrt.
+    assert.equal(doc.querySelectorAll('script').length, 1);
+  });
+});
+

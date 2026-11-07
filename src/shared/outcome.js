@@ -70,6 +70,13 @@ export function incompleteNotices(progress = {}) {
     notices.push({ key: 'notice_citekey_dropped', substitutions: [citekey] });
   }
 
+  // Wortlauttreue nicht gewaehrleistet: Chrome hat die Markierung geliefert,
+  // nicht die Seite (iframe oder gesperrte Seite). Gespeichert ist sie, aber
+  // Zeilenumbrueche und mehrfacher Leerraum fehlen.
+  if (progress.quoteApproximate) {
+    notices.push({ key: 'notice_quote_approximate', substitutions: [] });
+  }
+
   return notices;
 }
 

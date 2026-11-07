@@ -140,3 +140,26 @@ describe('summarizeDuplicates', () => {
     assert.equal(report.truncatedBy, 'limit');
   });
 });
+
+describe('summarizeDuplicates: limit wie der Server klemmen', () => {
+  const url = 'https://press.example.org/etwas-anderes';
+
+  for (const limit of [0, -5, 'viele', Number.NaN]) {
+    it(`limit ${String(limit)} faellt auf den Default zurueck`, () => {
+      // Der Server liefert dann bis zu 50 Zeilen; 3 sind echte Entwarnung,
+      // 50 sind abgeschnitten — nicht umgekehrt.
+      const short = summarizeDuplicates({ items: many(3), url, limit });
+      assert.equal(short.complete, true);
+      assert.equal(short.truncatedBy, null);
+      const full = summarizeDuplicates({ items: many(RESEARCH_LIST.LIMIT_DEFAULT), url, limit });
+      assert.equal(full.complete, false);
+      assert.equal(full.truncatedBy, 'limit');
+    });
+  }
+
+  it('ein limit ueber dem Maximum zaehlt als Maximum', () => {
+    const report = summarizeDuplicates({ items: many(RESEARCH_LIST.LIMIT_MAX), url, limit: 1000 });
+    assert.equal(report.complete, false);
+    assert.equal(report.truncatedBy, 'limit');
+  });
+});

@@ -94,4 +94,4 @@ backoff and is shown on the toolbar badge. Nothing is ever dropped silently.
 - **No persistent content script.** The harvesting script is injected via
   `activeTab` at the moment of a user action only.
 - **Source code:**
-  <https://github.com/bedeberger/schreibwerkstatt-browser-extension>
+  <https://github.com/schreibwerkstatt/browser-extension>

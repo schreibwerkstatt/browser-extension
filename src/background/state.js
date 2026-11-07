@@ -95,26 +95,50 @@ export function createStore({
   }
 
   /**
+   * Lesen-Aendern-Schreiben auf den Faehigkeits-Schluessel hintereinander.
+   * `CHECK_DUPLICATE` stoesst zwei Pruefungen gleichzeitig an, und beide
+   * koennen einen Befund schreiben — ohne Kette gewaenne der spaetere und
+   * der andere Befund ginge verloren.
+   */
+  let capabilityChain = Promise.resolve();
+
+  /**
+   * @template T
+   * @param {() => Promise<T>} task
+   * @returns {Promise<T>}
+   */
+  function serializeCapabilities(task) {
+    const run = capabilityChain.then(task);
+    capabilityChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  /**
    * @param {{capture?: boolean|null, byUrl?: boolean|null, researchList?: boolean|null, researchScopeMissing?: boolean}} detected
    */
   async function saveDetectedCapabilities(detected) {
-    const current = await getCapabilities();
-    const next = {
-      ...current,
-      capture: { ...current.capture, detected: pick(detected.capture, current.capture.detected) },
-      byUrl: { ...current.byUrl, detected: pick(detected.byUrl, current.byUrl.detected) },
-      researchList: {
-        ...current.researchList,
-        detected: pick(detected.researchList, current.researchList.detected),
-        scopeMissing:
-          detected.researchScopeMissing === undefined
-            ? current.researchList.scopeMissing
-            : !!detected.researchScopeMissing,
-      },
-      probedAt: Date.now(),
-    };
-    await writeState({ [STORAGE_KEYS.CAPABILITIES]: next });
-    return next;
+    return serializeCapabilities(async () => {
+      const current = await getCapabilities();
+      const next = {
+        ...current,
+        capture: { ...current.capture, detected: pick(detected.capture, current.capture.detected) },
+        byUrl: { ...current.byUrl, detected: pick(detected.byUrl, current.byUrl.detected) },
+        researchList: {
+          ...current.researchList,
+          detected: pick(detected.researchList, current.researchList.detected),
+          scopeMissing:
+            detected.researchScopeMissing === undefined
+              ? current.researchList.scopeMissing
+              : !!detected.researchScopeMissing,
+        },
+        probedAt: Date.now(),
+      };
+      await writeState({ [STORAGE_KEYS.CAPABILITIES]: next });
+      return next;
+    });
   }
 
   /**
@@ -130,15 +154,17 @@ export function createStore({
    * Nutzers aus den Optionen. Sie gilt weiter, auch fuer den neuen Server.
    */
   async function resetDetectedCapabilities() {
-    const current = await getCapabilities();
-    const next = {
-      capture: { mode: current.capture.mode, detected: null },
-      byUrl: { mode: current.byUrl.mode, detected: null },
-      researchList: { mode: current.researchList.mode, detected: null, scopeMissing: false },
-      probedAt: 0,
-    };
-    await writeState({ [STORAGE_KEYS.CAPABILITIES]: next });
-    return next;
+    return serializeCapabilities(async () => {
+      const current = await getCapabilities();
+      const next = {
+        capture: { mode: current.capture.mode, detected: null },
+        byUrl: { mode: current.byUrl.mode, detected: null },
+        researchList: { mode: current.researchList.mode, detected: null, scopeMissing: false },
+        probedAt: 0,
+      };
+      await writeState({ [STORAGE_KEYS.CAPABILITIES]: next });
+      return next;
+    });
   }
 
   /**
@@ -146,11 +172,13 @@ export function createStore({
    * @param {'auto'|'on'|'off'} mode
    */
   async function setCapabilityMode(name, mode) {
-    const current = await getCapabilities();
-    if (!Object.values(CAPABILITY_MODE).includes(mode)) return current;
-    const next = { ...current, [name]: { ...current[name], mode } };
-    await writeState({ [STORAGE_KEYS.CAPABILITIES]: next });
-    return next;
+    return serializeCapabilities(async () => {
+      const current = await getCapabilities();
+      if (!Object.values(CAPABILITY_MODE).includes(mode)) return current;
+      const next = { ...current, [name]: { ...current[name], mode } };
+      await writeState({ [STORAGE_KEYS.CAPABILITIES]: next });
+      return next;
+    });
   }
 
   /** @param {Array<Record<string, any>>} books */

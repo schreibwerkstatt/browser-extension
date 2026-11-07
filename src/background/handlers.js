@@ -44,6 +44,7 @@ import { fileNameFromUrl, normalizeServerUrl, toOriginPattern } from '../shared/
  * @property {ReturnType<typeof import('./attachment-store.js').createAttachmentStore>} attachmentCache
  * @property {Map<string, import('../shared/config.js').CaptureProgress>} lastOutcome
  * @property {(job: object, delayMs: number) => Promise<void>} showUndoNotification
+ * @property {(serverUrl: string) => Promise<boolean|null>} [hasHostPermission]
  * @property {() => string} extensionVersion
  * @property {(api: any) => Promise<object>} probeCapabilities
  */
@@ -56,9 +57,12 @@ export function createHandlers(ctx) {
     async [MSG.GET_STATE]() {
       const state = await ctx.store.readState();
       const counts = await ctx.queue.counts();
+      const serverUrl = state[STORAGE_KEYS.SERVER_URL];
       return {
-        serverUrl: state[STORAGE_KEYS.SERVER_URL],
+        serverUrl,
         hasToken: !!state[STORAGE_KEYS.TOKEN],
+        // `false` nur, wenn sicher fehlt; `null` = unbekannt, nicht melden.
+        hostPermission: serverUrl && ctx.hasHostPermission ? await ctx.hasHostPermission(serverUrl) : null,
         tokenState: state[STORAGE_KEYS.TOKEN_STATE],
         defaultBookId: state[STORAGE_KEYS.DEFAULT_BOOK_ID],
         books: state[STORAGE_KEYS.BOOKS],
@@ -149,8 +153,16 @@ export function createHandlers(ctx) {
         pdf: !!attachments.pdf,
       };
 
-      const job = await ctx.queue.add(intent, { holdMs: 0 });
-      if (attachments.screenshot || attachments.pdf) await ctx.attachmentCache.set(job.id, attachments);
+      const { serverUrl } = await ctx.store.getConfig();
+      const job = await ctx.queue.add(intent, {
+        holdMs: 0,
+        serverUrl,
+        // Erst die Anhaenge ablegen, dann den Auftrag sichtbar machen — sonst
+        // kann ein Wecker ihn dazwischen ohne Anhang abschicken.
+        beforeSave: async (created) => {
+          if (attachments.screenshot || attachments.pdf) await ctx.attachmentCache.set(created.id, attachments);
+        },
+      });
       await ctx.refreshBadge();
       // Sofort versuchen; bei Erfolg ist der Auftrag beim Antworten schon weg.
       await ctx.processQueue();
@@ -203,6 +215,15 @@ export function createHandlers(ctx) {
       if (!serverUrl) throw new ApiError({ code: 'INVALID_SERVER_URL', status: 400 });
 
       const token = String(message.token || '').trim();
+      const previous = await ctx.store.getConfig();
+      const originChanged = !!previous.serverUrl && originOf(previous.serverUrl) !== originOf(serverUrl);
+
+      // Ein Token gilt fuer EINEN Server. Beim Wechsel das alte weiterzuverwenden
+      // hiesse, es beim naechsten Aufruf an einen fremden Host zu schicken.
+      if (originChanged && !token) {
+        throw new ApiError({ code: 'CLIENT_TOKEN_REQUIRED', status: 400 });
+      }
+
       await ctx.store.writeState({
         [STORAGE_KEYS.SERVER_URL]: serverUrl,
         ...(token ? { [STORAGE_KEYS.TOKEN]: token } : {}),
@@ -210,6 +231,9 @@ export function createHandlers(ctx) {
         // Ein Serverwechsel macht Buecher und Faehigkeits-Befunde ungueltig.
         [STORAGE_KEYS.BOOKS]: [],
         [STORAGE_KEYS.BOOKS_FETCHED_AT]: 0,
+        // Die Buch-ID des alten Servers bezeichnet auf dem neuen ein anderes
+        // (oder fremdes) Buch — ein Zitat per Kontextmenue landete dort.
+        ...(originChanged ? { [STORAGE_KEYS.DEFAULT_BOOK_ID]: null } : {}),
       });
       // Sauberer Reset statt `saveDetectedCapabilities({ capture: null, ... })`,
       // denn `pick` liest `null` als „keine Aussage" und wuerde die Befunde
@@ -234,6 +258,18 @@ export function createHandlers(ctx) {
   };
 
   return handlers;
+}
+
+/**
+ * @param {string} url
+ * @returns {string}
+ */
+function originOf(url) {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return url;
+  }
 }
 
 /**

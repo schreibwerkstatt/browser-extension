@@ -117,7 +117,13 @@
     "message": "Der Server nimmt diesen Wert für „$1“ nicht an. Erlaubt ist: $2."
   },
   "err_invalid_url": {
-    "message": "Diese Adresse kann der Server nicht verarbeiten. Sie muss mit http:// oder https:// beginnen."
+    "message": "Diese Adresse nimmt der Server nicht an: sie muss mit http:// oder https:// beginnen und darf höchstens 2000 Zeichen lang sein. Gekürzt wird sie nicht."
+  },
+  "err_invalid_field": {
+    "message": "Der Server hat das Feld „$1“ abgelehnt: es hat den falschen Typ."
+  },
+  "err_duplicate_url": {
+    "message": "Zu dieser Adresse gibt es in diesem Buch schon ein Fundstück."
   },
   "err_empty": {
     "message": "Ein Fundstück braucht mindestens einen Titel, einen Text oder eine URL."
@@ -194,6 +200,12 @@
   "err_client_payload_too_large": {
     "message": "Der Eintrag ist zu groß für einen einzelnen Aufruf."
   },
+  "err_client_server_changed": {
+    "message": "Dieser Eintrag wurde für einen anderen Server erfasst und wird nicht an den aktuellen gesendet. Verwerfen oder den alten Server wieder eintragen."
+  },
+  "err_client_token_required": {
+    "message": "Für einen neuen Server bitte auch ein neues Geräte-Token eintragen — das bisherige gehört zum alten Server."
+  },
   "err_harvest_failed": {
     "message": "Diese Seite lässt sich nicht auslesen. Bei Chrome-eigenen Seiten und im Web Store ist das normal."
   },
@@ -223,6 +235,12 @@
   },
   "err_server_error": {
     "message": "Der Server hat einen Fehler gemeldet. Es wird später erneut versucht."
+  },
+  "err_search_failed": {
+    "message": "Die Suche auf dem Server ist gescheitert. Es wird später erneut versucht."
+  },
+  "err_shutting_down": {
+    "message": "Der Server startet gerade neu. Es wurde nichts gespeichert; es wird gleich erneut versucht."
   },
   "err_network": {
     "message": "Keine Verbindung zum Server. Der Eintrag wartet in der Warteschlange."
@@ -268,6 +286,9 @@
   },
   "validation_url_scheme": {
     "message": "Die URL muss mit http:// oder https:// beginnen."
+  },
+  "validation_url_too_long": {
+    "message": "Die Adresse ist $2 Zeichen lang, der Server nimmt höchstens $1 an. Gekürzt würde sie auf eine andere Seite zeigen – deshalb nicht gesendet."
   },
   "validation_year_invalid": {
     "message": "Bitte eine vierstellige Jahreszahl eingeben."
@@ -316,6 +337,9 @@
   },
   "csl_article": {
     "message": "Zeitschriftenartikel"
+  },
+  "csl_newspaper": {
+    "message": "Zeitungsartikel"
   },
   "csl_website": {
     "message": "Webseite"
@@ -412,9 +436,6 @@
   },
   "popup_clamp_urls": {
     "message": "Weitere Links"
-  },
-  "popup_clamp_url": {
-    "message": "URL der Quelle"
   },
   "popup_saved_source_existed": {
     "message": "Die Quelle war schon in deiner Bibliothek und wurde nur mit dem Buch verknüpft."
@@ -763,6 +784,12 @@
   },
   "notice_citekey_dropped": {
     "message": "Der Zitierschlüssel „$1“ war schon vergeben — der Server hat einen eigenen gewählt."
+  },
+  "notice_quote_approximate": {
+    "message": "Das Zitat stammt aus einem eingebetteten Rahmen oder einer gesperrten Seite: Zeilenumbrüche und mehrfache Leerzeichen sind verloren gegangen. Bitte den Wortlaut in der Web-App prüfen."
+  },
+  "popup_host_permission_missing": {
+    "message": "Der Zugriff auf den Server ist nicht erlaubt. Bitte in den Optionen „Zugriff auf diesen Host erlauben“ wählen."
   },
   "options_section_privacy": {
     "message": "6. Was verlässt den Browser"

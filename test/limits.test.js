@@ -11,6 +11,7 @@ import {
   validateBinarySize,
   validateResearchPayload,
   validateSourcePayload,
+  validateUrls,
 } from '../src/shared/limits.js';
 
 const keys = (problems) => problems.map((problem) => problem.key);
@@ -34,11 +35,14 @@ describe('validateResearchPayload', () => {
         'validation_research_empty',
       ),
     );
-    // Eine URL allein genuegt.
-    assert.deepEqual(
-      keys(validateResearchPayload({ book_id: 1, source: 'https://example.org' })),
-      [],
+    // Eine URL allein genuegt — aber nur, was der Server als URL zaehlt:
+    // `urls[]` bzw. `url` (/capture), nicht das Freitextfeld `source`.
+    assert.ok(
+      keys(validateResearchPayload({ book_id: 1, source: 'https://example.org' })).includes(
+        'validation_research_empty',
+      ),
     );
+    assert.deepEqual(keys(validateResearchPayload({ book_id: 1, url: 'https://example.org' })), []);
     assert.deepEqual(
       keys(validateResearchPayload({ book_id: 1, urls: [{ url: 'https://example.org' }] })),
       [],
@@ -183,7 +187,9 @@ describe('clampResearchPayload', () => {
     assert.deepEqual(fields(truncations), ['tags', 'tags']);
   });
 
-  it('kappt urls bei 20 Stueck, die URL bei 2000 und das Label bei 300', () => {
+  it('kappt urls bei 20 Stueck und das Label bei 300 — die Adresse selbst NIE', () => {
+    // Seit Vertrag api 6 weist der Server eine URL ueber 2000 Zeichen ab
+    // (`INVALID_URL`); eine abgeschnittene Adresse zeigt woandershin.
     const { payload, truncations } = clampResearchPayload({
       urls: Array.from({ length: 22 }, (_, i) => ({
         url: i === 0 ? `https://example.org/${'a'.repeat(2500)}` : `https://example.org/${i}`,
@@ -191,21 +197,21 @@ describe('clampResearchPayload', () => {
       })),
     });
     assert.equal(payload.urls.length, LIMITS.URLS_MAX);
-    assert.equal(payload.urls[0].url.length, LIMITS.URL_MAX);
+    assert.equal(payload.urls[0].url.length, 2520);
     assert.equal(payload.urls[0].label.length, LIMITS.URL_LABEL_MAX);
-    assert.deepEqual(fields(truncations), ['urls', 'urls']);
+    assert.deepEqual(fields(truncations), ['urls']);
   });
 });
 
 describe('clampSourcePayload', () => {
-  it('kuerzt Titel und URL', () => {
+  it('kuerzt den Titel, die URL nie', () => {
     const { payload, truncations } = clampSourcePayload({
       title: 'x'.repeat(400),
       url: `https://example.org/${'a'.repeat(2500)}`,
     });
     assert.equal(payload.title.length, LIMITS.TITLE_MAX);
-    assert.equal(payload.url.length, LIMITS.URL_MAX);
-    assert.deepEqual(fields(truncations), ['title', 'url']);
+    assert.equal(payload.url.length, 2520);
+    assert.deepEqual(fields(truncations), ['title']);
   });
 
   it('erfindet keine Grenze fuer Felder, die keine dokumentierte haben', () => {
@@ -234,8 +240,51 @@ describe('clampCapturePayload', () => {
     });
     assert.equal(payload.title.length, LIMITS.TITLE_MAX);
     assert.equal(payload.body.length, LIMITS.BODY_MAX);
-    assert.equal(payload.url.length, LIMITS.URL_MAX);
-    assert.deepEqual(fields(truncations), ['title', 'body', 'url']);
+    assert.equal(payload.url.length, 2520);
+    assert.deepEqual(fields(truncations), ['title', 'body']);
+  });
+});
+
+describe('validateUrls', () => {
+  it('lehnt eine URL ueber 2000 Zeichen ab — in `url` wie in `urls[]`', () => {
+    const long = `https://example.org/${'a'.repeat(1990)}`;
+    assert.deepEqual(
+      validateUrls({ url: long }).map((p) => [p.field, p.key, p.params?.max]),
+      [['url', 'validation_url_too_long', LIMITS.URL_MAX]],
+    );
+    assert.deepEqual(
+      validateUrls({ urls: [{ url: 'https://example.org/kurz' }, { url: long }] }).map((p) => p.field),
+      ['urls'],
+    );
+  });
+
+  it('nimmt genau 2000 Zeichen noch an', () => {
+    const exact = `https://example.org/${'a'.repeat(LIMITS.URL_MAX - 20)}`;
+    assert.equal(exact.length, LIMITS.URL_MAX);
+    assert.deepEqual(validateUrls({ url: exact, urls: [{ url: exact }] }), []);
+  });
+
+  it('lehnt ein anderes Schema ab, auch in urls[]', () => {
+    assert.deepEqual(
+      validateUrls({ urls: [{ url: 'ftp://example.org/datei' }] }).map((p) => p.key),
+      ['validation_url_scheme'],
+    );
+  });
+
+  it('steckt in validateResearchPayload, nicht in validateSourcePayload', () => {
+    // `POST /sources` kennt keine Laengengrenze fuer `url` — dort wuerde die
+    // Pruefung eine erfundene Grenze durchsetzen.
+    const long = `https://example.org/${'a'.repeat(2100)}`;
+    assert.ok(
+      keys(validateResearchPayload({ book_id: 1, title: 'T', urls: [{ url: long }] })).includes(
+        'validation_url_too_long',
+      ),
+    );
+    assert.ok(
+      !keys(validateSourcePayload({ csl_type: 'website', title: 'T', url: long })).includes(
+        'validation_url_too_long',
+      ),
+    );
   });
 });
 

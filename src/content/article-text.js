@@ -10,6 +10,7 @@ import { Readability, isProbablyReaderable } from '@mozilla/readability';
 
 import { LIMITS } from '../shared/limits.js';
 import { tidyParagraphs, truncateAtSentence } from '../shared/text.js';
+import { CHROME_SELECTOR, textWithout } from './visible-text.js';
 
 /**
  * @typedef {object} ArticleText
@@ -83,11 +84,7 @@ function fallbackText(doc) {
   const candidates = doc.querySelectorAll('article, main, [role="main"], #content, .content, body');
   let best = '';
   for (const node of candidates) {
-    const clone = /** @type {Element} */ (node.cloneNode(true));
-    for (const junk of clone.querySelectorAll('script, style, noscript, nav, header, footer, aside, form, iframe')) {
-      junk.remove();
-    }
-    const text = clone.textContent || '';
+    const text = textWithout(node, CHROME_SELECTOR);
     if (text.length > best.length) best = text;
   }
   return best;

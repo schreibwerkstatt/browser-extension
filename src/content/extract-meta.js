@@ -31,10 +31,11 @@ import {
   normalizeDate,
   yearFromDate,
 } from '../shared/text.js';
-import { normalizeUrl, resolveUrl } from '../shared/url.js';
+import { normalizeUrl, resolveUrl, sameServerResource } from '../shared/url.js';
 import { harvestBylineDate, harvestBylineNames } from './byline.js';
 import { harvestMediaWiki } from './mediawiki.js';
 import { hostNameCandidates, splitTitleAffix, stripTitleAffix } from './title-affix.js';
+import { textWithout } from './visible-text.js';
 
 /** Reihenfolge der Schichten; frueher = staerker. */
 export const LAYERS = Object.freeze(['site', 'citation', 'jsonld', 'dublincore', 'opengraph', 'fallback']);
@@ -114,6 +115,16 @@ function all(index, keys) {
 }
 
 /**
+ * Knoten, die nicht auf oberster Ebene (bzw. im `@graph`) stehen, sondern
+ * ueber `mainEntity`, `hasPart`, `itemListElement` oder `mainEntityOfPage`
+ * erreicht wurden. Eine Liste verwandter Artikel steckt dort — der Artikel
+ * der Seite selbst steht fast immer oben.
+ *
+ * @type {WeakSet<object>}
+ */
+const NESTED_NODES = new WeakSet();
+
+/**
  * Sammelt alle JSON-LD-Knoten, inklusive `@graph` und verschachtelter Arrays.
  * @param {Document} doc
  * @returns {Record<string, any>[]}
@@ -122,19 +133,24 @@ export function collectJsonLdNodes(doc) {
   /** @type {Record<string, any>[]} */
   const nodes = [];
 
-  /** @param {any} value */
-  const walk = (value, depth = 0) => {
+  /**
+   * @param {any} value
+   * @param {number} [depth]
+   * @param {boolean} [nested] ueber mainEntity/hasPart/… erreicht
+   */
+  const walk = (value, depth = 0, nested = false) => {
     if (!value || depth > 6) return;
     if (Array.isArray(value)) {
-      for (const entry of value) walk(entry, depth + 1);
+      for (const entry of value) walk(entry, depth + 1, nested);
       return;
     }
     if (typeof value !== 'object') return;
     nodes.push(value);
-    if (value['@graph']) walk(value['@graph'], depth + 1);
+    if (nested) NESTED_NODES.add(value);
+    if (value['@graph']) walk(value['@graph'], depth + 1, nested);
     // Verschachtelte Werke ("mainEntity", "itemListElement") mitnehmen.
     for (const key of ['mainEntity', 'mainEntityOfPage', 'itemListElement', 'hasPart']) {
-      if (value[key] && typeof value[key] === 'object') walk(value[key], depth + 1);
+      if (value[key] && typeof value[key] === 'object') walk(value[key], depth + 1, true);
     }
   };
 
@@ -208,17 +224,59 @@ function typesOf(node) {
 
 /**
  * Waehlt den JSON-LD-Knoten, der die Seite selbst beschreibt.
+ *
+ * Artikel-Knoten auf oberster Ebene schlagen verschachtelte (verwandte
+ * Artikel in `hasPart`/`itemListElement`); innerhalb derselben Ebene gewinnt
+ * der, dessen `url` oder `mainEntityOfPage` auf die Seite zeigt, sonst der
+ * erste. Andere Werktypen (Buch, Datensatz, …) nur, wenn kein Artikel da ist.
+ *
  * @param {Record<string, any>[]} nodes
+ * @param {string} [pageUrl] Adresse der Seite, fuer den Abgleich
  * @returns {Record<string, any>|null}
  */
-export function pickJsonLdArticle(nodes) {
+export function pickJsonLdArticle(nodes, pageUrl = '') {
+  /** @type {Record<string, any>|null} */
+  let best = null;
+  let bestScore = -1;
   let fallbackNode = null;
   for (const node of nodes) {
     const types = typesOf(node);
-    if (types.some((type) => ARTICLE_TYPES.has(type))) return node;
+    if (types.some((type) => ARTICLE_TYPES.has(type))) {
+      const score = (NESTED_NODES.has(node) ? 0 : 2) + (pageUrl && describesPage(node, pageUrl) ? 1 : 0);
+      if (score > bestScore) {
+        best = node;
+        bestScore = score;
+      }
+      continue;
+    }
     if (!fallbackNode && types.some((type) => OTHER_CREATIVE_TYPES.has(type))) fallbackNode = node;
   }
-  return fallbackNode;
+  return best || fallbackNode;
+}
+
+/**
+ * Zeigt `url` oder `mainEntityOfPage` des Knotens auf diese Seite?
+ * Verglichen nach Server-Regeln (`sameServerResource`), wie jeder Vergleich
+ * zweier Adressen.
+ *
+ * @param {Record<string, any>} node
+ * @param {string} pageUrl
+ */
+function describesPage(node, pageUrl) {
+  /** @type {string[]} */
+  const candidates = [];
+  /** @param {any} value */
+  const collect = (value) => {
+    if (typeof value === 'string') candidates.push(value);
+    else if (Array.isArray(value)) value.forEach(collect);
+    else if (value && typeof value === 'object') {
+      if (typeof value['@id'] === 'string') candidates.push(value['@id']);
+      if (typeof value.url === 'string') candidates.push(value.url);
+    }
+  };
+  collect(node.url);
+  collect(node.mainEntityOfPage);
+  return candidates.some((candidate) => sameServerResource(resolveUrl(candidate, pageUrl), pageUrl));
 }
 
 /**
@@ -417,7 +475,7 @@ export function harvestMetadata(doc, options = {}) {
   const index = indexMetaTags(doc);
   const jsonLdNodes = collectJsonLdNodes(doc);
   const jsonLdIds = indexJsonLdIds(jsonLdNodes);
-  const picked = pickJsonLdArticle(jsonLdNodes) || {};
+  const picked = pickJsonLdArticle(jsonLdNodes, baseUrl) || {};
   /** @type {Record<string, any>} */
   const article = { ...picked };
   for (const key of ['author', 'creator', 'editor', 'publisher', 'isPartOf', 'publication']) {
@@ -515,7 +573,10 @@ export function harvestMetadata(doc, options = {}) {
     'jsonld',
     extractDoi(String(article.doi || article.identifier?.value || article.identifier || '')),
   );
-  fields.canonicalUrl.set('jsonld', resolveUrl(typeof article.url === 'string' ? article.url : null, baseUrl));
+  fields.canonicalUrl.set(
+    'jsonld',
+    plausibleCanonical(resolveUrl(typeof article.url === 'string' ? article.url : null, baseUrl), baseUrl),
+  );
   fields.lang.set('jsonld', typeof article.inLanguage === 'string' ? article.inLanguage : schemaName(article.inLanguage));
 
   // ------------------------------------------------------------- 3. Dublin Core
@@ -544,11 +605,14 @@ export function harvestMetadata(doc, options = {}) {
   );
   fields.authors.set('opengraph', harvestPeople(all(index, ['article:author', 'author', 'twitter:creator']), siteNames));
   fields.description.set('opengraph', collapseWhitespace(first(index, ['og:description', 'description']) || ''));
-  fields.canonicalUrl.set('opengraph', resolveUrl(first(index, ['og:url']), baseUrl));
+  fields.canonicalUrl.set('opengraph', plausibleCanonical(resolveUrl(first(index, ['og:url']), baseUrl), baseUrl));
 
   // ---------------------------------------------------------------- 5. Fallback
   const canonicalLink = doc.querySelector('link[rel~="canonical" i]');
-  fields.canonicalUrl.set('fallback', resolveUrl(canonicalLink && canonicalLink.getAttribute('href'), baseUrl));
+  fields.canonicalUrl.set(
+    'fallback',
+    plausibleCanonical(resolveUrl(canonicalLink && canonicalLink.getAttribute('href'), baseUrl), baseUrl),
+  );
 
   const documentTitle = collapseWhitespace(doc.title || '');
   const titleSplit = splitTitleAffix(documentTitle, titleHints);
@@ -569,13 +633,18 @@ export function harvestMetadata(doc, options = {}) {
 
   // ------------------------------------------------------- DOI aus dem Fliesstext
   // Ausdruecklich gewuenscht: wenn keine Meta-Angabe existiert, im Text suchen.
+  // Gelesen wird nur der sichtbare Text: in Skripten, Stylesheets und
+  // `<noscript>` stehen DOIs aus Widgets und Konfigurationen, nicht aus der Seite.
+  /** @type {string|null} */
+  let bodyText = null;
+  const visibleBody = () => (bodyText ??= textWithout(doc.body));
   if (!fields.doi.resolve()) {
-    const textDoi = extractDoi(doc.body ? doc.body.textContent || '' : '');
+    const textDoi = extractDoi(visibleBody());
     if (textDoi) fields.doi.set('fallback', textDoi);
   }
   if (!fields.isbn.resolve()) {
     // Im Fliesstext nur mit ausdruecklichem „ISBN" davor.
-    const textIsbn = extractIsbn(doc.body ? doc.body.textContent || '' : '', { requireLabel: true });
+    const textIsbn = extractIsbn(visibleBody(), { requireLabel: true });
     if (textIsbn) fields.isbn.set('fallback', textIsbn);
   }
 
@@ -646,6 +715,46 @@ export function harvestMetadata(doc, options = {}) {
     description,
     provenance,
   };
+}
+
+/**
+ * Eine kanonische Adresse, die offensichtlich nicht diese Seite meint, ist
+ * schlimmer als keine: Viele CMS setzen `rel=canonical` oder `og:url`
+ * seitenweit auf die Startseite oder eine Rubrik. Verworfen wird
+ *
+ *  - ein anderer Host (ein `www.` mehr oder weniger zaehlt nicht),
+ *  - die Startseite oder ein Pfad, der ein echter Praefix des Seitenpfads ist
+ *    („/2024" fuer „/2024/artikel-a") — eine Ebene hoeher ist nie dasselbe
+ *    Dokument.
+ *
+ * Verworfen heisst leer: die naechste Schicht kommt zum Zug, am Ende die
+ * Seiten-URL selbst.
+ *
+ * @param {string|null} candidate bereits aufgeloest
+ * @param {string} pageUrl
+ * @returns {string|null}
+ */
+export function plausibleCanonical(candidate, pageUrl) {
+  if (!candidate) return null;
+  let target;
+  let page;
+  try {
+    target = new URL(candidate);
+    page = new URL(pageUrl);
+  } catch {
+    // Ohne brauchbare Seiten-URL gibt es nichts zu vergleichen.
+    return candidate;
+  }
+  const bareHost = (/** @type {URL} */ url) => url.hostname.toLowerCase().replace(/^www\./, '');
+  if (bareHost(target) !== bareHost(page)) return null;
+
+  const segments = (/** @type {URL} */ url) => url.pathname.split('/').filter(Boolean);
+  const targetPath = segments(target);
+  const pagePath = segments(page);
+  if (targetPath.length < pagePath.length && targetPath.every((segment, i) => segment === pagePath[i])) {
+    return null;
+  }
+  return candidate;
 }
 
 /**

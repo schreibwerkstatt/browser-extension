@@ -16,9 +16,11 @@
  * sondern **nennen sich selbst**.
  */
 
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { chmod, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
+import { inflateRawSync } from 'node:zlib';
 
 export const SCOPE = 'https://www.googleapis.com/auth/chromewebstore';
 export const OAUTH_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
@@ -202,15 +204,71 @@ export function missingFields(config, { refreshToken = true } = {}) {
 }
 
 /**
+ * Redirect-URI fuer den Loopback-Weg.
+ *
+ * Bewusst `127.0.0.1` und nicht `localhost`: der Server in `store-auth.mjs`
+ * lauscht nur auf der IPv4-Loopback-Adresse. `localhost` kann der Browser zu
+ * `::1` aufloesen und liefe dann ins Leere — und Google empfiehlt fuer
+ * Desktop-Clients ohnehin die IP-Form; jeder Port ist ohne Voranmeldung
+ * zugelassen.
+ *
+ * @param {number} port
+ * @returns {string}
+ */
+export function loopbackRedirectUri(port) {
+  return `http://127.0.0.1:${port}`;
+}
+
+/** @param {Buffer} buffer */
+function base64url(buffer) {
+  return buffer.toString('base64url');
+}
+
+/**
+ * Zufaelliger `state` gegen untergeschobene Weiterleitungen: jede andere Seite
+ * im Browser kann `http://127.0.0.1:<port>/?code=…` aufrufen. Nur eine
+ * Weiterleitung mit genau diesem Wert wird angenommen.
+ *
+ * @returns {string}
+ */
+export function newState() {
+  return base64url(randomBytes(32));
+}
+
+/**
+ * PKCE-Paar (RFC 7636, Verfahren S256). Der `code_verifier` bleibt im Prozess
+ * und geht erst beim Code-Tausch mit; wer den Code unterwegs abfaengt, kann
+ * ihn ohne den Verifier nicht einloesen.
+ *
+ * @returns {{ verifier: string, challenge: string }}
+ */
+export function pkcePair() {
+  // 32 Byte -> 43 Zeichen base64url, die Untergrenze von RFC 7636.
+  const verifier = base64url(randomBytes(32));
+  return { verifier, challenge: pkceChallenge(verifier) };
+}
+
+/**
+ * @param {string} verifier
+ * @returns {string}
+ */
+export function pkceChallenge(verifier) {
+  return base64url(createHash('sha256').update(verifier, 'ascii').digest());
+}
+
+/**
  * Adresse des Zustimmungsbildschirms.
  *
  * `access_type=offline` **und** `prompt=consent` sind beide noetig: ohne das
  * erste kommt kein Refresh-Token, ohne das zweite nur beim allerersten Mal.
+ * `state` und `code_challenge` sind Pflicht — ohne sie gibt es keine Adresse.
  *
- * @param {{ clientId: string, redirectUri: string }} options
+ * @param {{ clientId: string, redirectUri: string, state: string, codeChallenge: string }} options
  * @returns {string}
  */
-export function authUrl({ clientId, redirectUri }) {
+export function authUrl({ clientId, redirectUri, state, codeChallenge }) {
+  if (!state) throw new Error('authUrl: state fehlt.');
+  if (!codeChallenge) throw new Error('authUrl: codeChallenge fehlt.');
   const query = new URLSearchParams({
     client_id: clientId,
     redirect_uri: redirectUri,
@@ -218,8 +276,34 @@ export function authUrl({ clientId, redirectUri }) {
     scope: SCOPE,
     access_type: 'offline',
     prompt: 'consent',
+    state,
+    code_challenge: codeChallenge,
+    code_challenge_method: 'S256',
   });
   return `${OAUTH_AUTH_URL}?${query}`;
+}
+
+/**
+ * Wertet die Weiterleitung auf den Loopback-Server aus. Ein fehlender oder
+ * falscher `state` ist ein Abbruch, kein „nochmal warten": wer so etwas
+ * schickt, ist nicht Google.
+ *
+ * @param {URLSearchParams} params
+ * @param {string} expectedState
+ * @returns {string} der Autorisierungs-Code
+ */
+export function readCallback(params, expectedState) {
+  const state = params.get('state') ?? '';
+  const a = Buffer.from(state);
+  const b = Buffer.from(expectedState);
+  if (!expectedState || a.length !== b.length || !timingSafeEqual(a, b)) {
+    throw new Error('Weiterleitung mit falschem oder fehlendem state — abgebrochen.');
+  }
+  const error = params.get('error');
+  if (error) throw new Error(`Abgebrochen: ${error}`);
+  const code = params.get('code');
+  if (!code) throw new Error('Weiterleitung ohne Code.');
+  return code;
 }
 
 /**
@@ -241,13 +325,17 @@ async function readError(response, what) {
 }
 
 /**
- * Tauscht den Autorisierungs-Code gegen ein Refresh-Token.
+ * Tauscht den Autorisierungs-Code gegen ein Refresh-Token. `codeVerifier` ist
+ * das Gegenstueck zur `code_challenge` aus `authUrl()`.
  *
- * @param {{ code: string, clientId: string, clientSecret: string, redirectUri: string }} options
+ * @param {{ code: string, clientId: string, clientSecret: string, redirectUri: string, codeVerifier: string, fetchImpl?: typeof fetch }} options
  * @returns {Promise<{ refresh_token?: string, access_token: string }>}
  */
-export async function exchangeCode({ code, clientId, clientSecret, redirectUri }) {
-  const response = await fetch(OAUTH_TOKEN_URL, {
+export async function exchangeCode({
+  code, clientId, clientSecret, redirectUri, codeVerifier, fetchImpl = fetch,
+}) {
+  if (!codeVerifier) throw new Error('exchangeCode: codeVerifier fehlt.');
+  const response = await fetchImpl(OAUTH_TOKEN_URL, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -256,6 +344,7 @@ export async function exchangeCode({ code, clientId, clientSecret, redirectUri }
       client_secret: clientSecret,
       redirect_uri: redirectUri,
       grant_type: 'authorization_code',
+      code_verifier: codeVerifier,
     }),
   });
   if (!response.ok) await readError(response, 'Der Tausch des Autorisierungs-Codes');
@@ -351,4 +440,71 @@ export async function publishItem({ token, itemId, target = 'default' }) {
   });
   if (!response.ok) await readError(response, 'Das Einreichen');
   return response.json();
+}
+
+// --- ZIP lesen ----------------------------------------------------------------
+
+/**
+ * Liest eine einzelne Datei aus einem ZIP — gerade genug, um das Manifest im
+ * Paket zu pruefen. Kein Zip64, kein mehrteiliges Archiv, nur „gespeichert"
+ * und Deflate; das deckt `tools/package.mjs` ab und jedes uebliche Werkzeug.
+ * Gelesen wird ueber das Zentralverzeichnis, weil nur dort die Groessen
+ * verlaesslich stehen (bei Bit 3 sind sie im lokalen Kopf null).
+ *
+ * @param {Buffer} zip
+ * @param {string} name Pfad im Archiv, mit `/` als Trenner
+ * @returns {Buffer | null} Inhalt, oder `null`, wenn es den Eintrag nicht gibt
+ */
+export function readZipEntry(zip, name) {
+  // Ende des Zentralverzeichnisses: 22 Byte plus hoechstens 65535 Kommentar.
+  let eocd = -1;
+  for (let i = zip.length - 22; i >= Math.max(0, zip.length - 22 - 0xffff); i -= 1) {
+    if (zip.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('Kein ZIP: Ende des Zentralverzeichnisses nicht gefunden.');
+
+  const count = zip.readUInt16LE(eocd + 10);
+  let pos = zip.readUInt32LE(eocd + 16);
+  for (let n = 0; n < count; n += 1) {
+    if (zip.readUInt32LE(pos) !== 0x02014b50) throw new Error('ZIP-Zentralverzeichnis beschaedigt.');
+    const method = zip.readUInt16LE(pos + 10);
+    const compressedSize = zip.readUInt32LE(pos + 20);
+    const nameLength = zip.readUInt16LE(pos + 28);
+    const extraLength = zip.readUInt16LE(pos + 30);
+    const commentLength = zip.readUInt16LE(pos + 32);
+    const localOffset = zip.readUInt32LE(pos + 42);
+    const entryName = zip.subarray(pos + 46, pos + 46 + nameLength).toString('utf8');
+    pos += 46 + nameLength + extraLength + commentLength;
+    if (entryName !== name) continue;
+
+    if (zip.readUInt32LE(localOffset) !== 0x04034b50) throw new Error(`ZIP-Eintrag ${name}: lokaler Kopf beschaedigt.`);
+    const dataStart = localOffset + 30 + zip.readUInt16LE(localOffset + 26) + zip.readUInt16LE(localOffset + 28);
+    const data = zip.subarray(dataStart, dataStart + compressedSize);
+    if (method === 0) return Buffer.from(data);
+    if (method === 8) return inflateRawSync(data);
+    throw new Error(`ZIP-Eintrag ${name}: Verfahren ${method} wird nicht gelesen.`);
+  }
+  return null;
+}
+
+/**
+ * Version aus dem `manifest.json` **im Paket** — nicht aus `dist/`. Genau das
+ * ZIP wird hochgeladen, also muss genau dessen Manifest stimmen.
+ *
+ * @param {Buffer} zip
+ * @returns {string}
+ */
+export function zipManifestVersion(zip) {
+  const raw = readZipEntry(zip, 'manifest.json');
+  if (!raw) throw new Error('Das Paket traegt kein manifest.json im Wurzelverzeichnis.');
+  let manifest;
+  try {
+    manifest = JSON.parse(raw.toString('utf8'));
+  } catch {
+    throw new Error('manifest.json im Paket ist kein gueltiges JSON.');
+  }
+  if (typeof manifest.version !== 'string' || !manifest.version) {
+    throw new Error('manifest.json im Paket hat keine Version.');
+  }
+  return manifest.version;
 }

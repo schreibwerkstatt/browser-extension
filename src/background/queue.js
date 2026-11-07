@@ -54,6 +54,12 @@ export function createQueue({ load, save, now = () => Date.now(), random = Math.
    * @param {import('../shared/config.js').CaptureIntent} intent
    * @param {object} [options]
    * @param {number} [options.holdMs] Undo-Fenster; solange Zustand `held`
+   * @param {string} [options.serverUrl] Server, fuer den der Auftrag erfasst
+   *   wurde. Seine `book_id` gilt nur dort; nach einem Serverwechsel darf er
+   *   nicht an den neuen gehen.
+   * @param {(job: import('../shared/config.js').CaptureJob) => Promise<void>} [options.beforeSave]
+   *   laeuft, BEVOR der Auftrag sichtbar wird — fuer die Anhaenge. Andernfalls
+   *   koennte ein Wecker ihn dazwischen greifen und ohne Anhang senden.
    * @returns {Promise<import('../shared/config.js').CaptureJob>}
    */
   async function add(intent, options = {}) {
@@ -62,6 +68,7 @@ export function createQueue({ load, save, now = () => Date.now(), random = Math.
     /** @type {import('../shared/config.js').CaptureJob} */
     const job = {
       id: `job_${timestamp.toString(36)}_${Math.floor(random() * 1e9).toString(36)}`,
+      ...(options.serverUrl ? { serverUrl: options.serverUrl } : {}),
       createdAt: timestamp,
       attempts: 0,
       runAfter: timestamp + holdMs,
@@ -82,6 +89,7 @@ export function createQueue({ load, save, now = () => Date.now(), random = Math.
       },
     };
 
+    if (options.beforeSave) await options.beforeSave(job);
     await transaction((jobs) => {
       jobs.push(job);
     });
@@ -116,6 +124,33 @@ export function createQueue({ load, save, now = () => Date.now(), random = Math.
       if (!job) return null;
       Object.assign(job, patch);
       return job;
+    });
+  }
+
+  /**
+   * Uebernimmt einen faelligen Auftrag zur Ausfuehrung — atomar.
+   *
+   * `due()` ist nur eine Momentaufnahme. Zwischen ihr und dem Senden liegen
+   * Netzaufrufe (Faehigkeits-Probe, vorherige Auftraege); in der Zeit kann der
+   * Nutzer einen Auftrag zuruecknehmen oder verwerfen. Ohne diese Pruefung ging
+   * er trotzdem hinaus, waehrend die Oberflaeche „zurueckgenommen" gemeldet hat.
+   *
+   * Liefert den Auftrag im GESPEICHERTEN Stand (mit aktuellem Fortschritt)
+   * oder `null`, wenn es ihn nicht mehr gibt bzw. er nicht mehr faellig ist.
+   *
+   * @param {string} id
+   * @returns {Promise<import('../shared/config.js').CaptureJob|null>}
+   */
+  async function claim(id) {
+    const timestamp = now();
+    return transaction((jobs) => {
+      const job = jobs.find((entry) => entry.id === id);
+      if (!job) return null;
+      const runnable =
+        job.state === JOB_STATE.PENDING || job.state === JOB_STATE.HELD || job.state === JOB_STATE.RUNNING;
+      if (!runnable || job.runAfter > timestamp) return null;
+      job.state = JOB_STATE.RUNNING;
+      return structuredClone(job);
     });
   }
 
@@ -207,8 +242,13 @@ export function createQueue({ load, save, now = () => Date.now(), random = Math.
    */
   async function nextWakeAt() {
     const jobs = await load();
+    // `running` zaehlt mit: steht ein Auftrag so im Speicher, waehrend dieser
+    // Worker nichts abarbeitet, wurde der vorige mitten im Senden beendet.
+    // Ohne Wecker bliebe er bis zum naechsten Browserstart liegen.
     const times = jobs
-      .filter((job) => job.state === JOB_STATE.PENDING || job.state === JOB_STATE.HELD)
+      .filter(
+        (job) => job.state === JOB_STATE.PENDING || job.state === JOB_STATE.HELD || job.state === JOB_STATE.RUNNING,
+      )
       .map((job) => job.runAfter)
       .filter((value) => Number.isFinite(value));
     if (!times.length) return null;
@@ -229,5 +269,5 @@ export function createQueue({ load, save, now = () => Date.now(), random = Math.
     };
   }
 
-  return { list, add, due, update, complete, discard, fail, retryNow, undo, nextWakeAt, counts };
+  return { list, add, due, claim, update, complete, discard, fail, retryNow, undo, nextWakeAt, counts };
 }

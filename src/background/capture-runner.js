@@ -21,6 +21,7 @@ import {
   validateBinarySize,
   validateResearchPayload,
   validateSourcePayload,
+  validateUrls,
 } from '../shared/limits.js';
 import { serverNormalizeUrl } from '../shared/url.js';
 
@@ -30,7 +31,20 @@ import { serverNormalizeUrl } from '../shared/url.js';
  * @property {{capture: boolean, byUrl: boolean}} capabilities
  * @property {(event: string, detail?: Record<string, any>) => void} [log]
  * @property {(name: 'capture'|'byUrl') => void} [onCapabilityMissing]
+ * @property {(progress: import('../shared/config.js').CaptureProgress) => Promise<void>|void} [onProgress]
+ *   Nach jedem gelungenen Teilschritt aufgerufen, damit der Fortschritt einen
+ *   Worker-Neustart mitten im Auftrag ueberlebt. Ohne ihn stuende ein schon
+ *   angelegtes Fundstueck nur im Arbeitsspeicher — der naechste Versuch legte
+ *   es ein zweites Mal an.
  */
+
+/**
+ * @param {RunContext} ctx
+ * @param {import('../shared/config.js').CaptureProgress} progress
+ */
+async function checkpoint(ctx, progress) {
+  if (ctx.onProgress) await ctx.onProgress(progress);
+}
 
 const wantsResearch = (mode) => mode === 'research' || mode === 'both';
 const wantsSource = (mode) => mode === 'source' || mode === 'both';
@@ -75,16 +89,18 @@ export async function runCaptureJob(job, ctx) {
     const problems = validateResearchPayload(payload, { verbatimBody: isVerbatim(intent) });
     if (problems.length) throwValidation(problems);
 
-    const item = await api.createResearchItem(payload);
+    const item = await createResearchItem(payload, ctx);
     progress.researchItemId = item && (item.id ?? item.research_item?.id) ? (item.id ?? item.research_item.id) : null;
     progress.researchCreated = true;
     progress.via = progress.via || 'split';
     log('research-created', { id: progress.researchItemId });
+    await checkpoint(ctx, progress);
   }
 
   // ----------------------------------------------------------------- Quelle
   if (wantsSource(intent.mode) && !progress.sourceId) {
     await createOrReuseSource(job, ctx);
+    await checkpoint(ctx, progress);
   }
 
   // Verknuepfung nachziehen (eigener Request laut Vertrag).
@@ -98,6 +114,7 @@ export async function runCaptureJob(job, ctx) {
     progress.linkedBookIds.push(intent.bookId);
     progress.sourceLinked = true;
     log('source-linked', { id: progress.sourceId, bookId: intent.bookId });
+    await checkpoint(ctx, progress);
   }
 
   // --------------------------------------------------------------- Anhaenge
@@ -126,6 +143,10 @@ async function tryUnifiedCapture(job, ctx) {
       ? validateResearchPayload(payload, { verbatimBody: isVerbatim(intent) })
       : []),
     ...(wantsSource(intent.mode) ? validateSourcePayload(payload) : []),
+    // `validateResearchPayload` prueft die Adresse schon mit; im reinen
+    // Quellen-Modus muss es eigens geschehen — `/capture` lehnt eine zu lange
+    // `url` auch dann ab (`INVALID_URL`), `POST /sources` dagegen nicht.
+    ...(wantsResearch(intent.mode) ? [] : validateUrls(payload)),
   ];
   if (problems.length) throwValidation(problems);
 
@@ -142,8 +163,20 @@ async function tryUnifiedCapture(job, ctx) {
     });
   }
 
+  let result;
   try {
-    const result = (await api.capture(payload)) || {};
+    result = (await captureOnce(api, payload, log)) || {};
+  } catch (error) {
+    const err = /** @type {any} */ (error);
+    if (isRouteMissing(err)) {
+      log('capture-endpoint-missing');
+      if (onCapabilityMissing) onCapabilityMissing('capture');
+      return false; // auf den Vier-Request-Pfad zurueckfallen
+    }
+    throw error;
+  }
+
+  {
     progress.via = 'capture';
 
     // Der Vertrag antwortet mit drei Flags — `research_created`,
@@ -172,16 +205,65 @@ async function tryUnifiedCapture(job, ctx) {
       sourceCreated: progress.sourceCreated,
       sourceLinked: progress.sourceLinked,
     });
-    await uploadAttachments(job, ctx);
-    return true;
+    await checkpoint(ctx, progress);
+  }
+
+  // Bewusst AUSSERHALB des try oben: ein HTML-404 eines Upload-Pfads sagt
+  // nichts ueber `/capture`, das gerade funktioniert hat. Laege der Upload im
+  // try, schaltete `isRouteMissing` den Ein-Request-Pfad faelschlich ab.
+  await uploadAttachments(job, ctx);
+  return true;
+}
+
+/**
+ * `POST /capture`, bei `409 CITEKEY_TAKEN` genau einmal wiederholt.
+ *
+ * Auf diesem Pfad heisst der Code laut Vertrag nur: zwei gleichzeitige
+ * Anfragen haben um denselben automatisch vergebenen Schluessel gerungen
+ * (`/capture` nimmt keinen `citekey` an). Der zweite Anlauf vergibt einen
+ * neuen; der Auftrag als „endgueltig gescheitert" waere falsch.
+ *
+ * @param {RunContext['api']} api
+ * @param {Record<string, any>} payload
+ * @param {(event: string, detail?: Record<string, any>) => void} log
+ */
+async function captureOnce(api, payload, log) {
+  try {
+    return await api.capture(payload);
+  } catch (error) {
+    if (/** @type {any} */ (error).code !== 'CITEKEY_TAKEN') throw error;
+    log('capture-citekey-race-retry');
+    return api.capture(payload);
+  }
+}
+
+/**
+ * `POST /research` — und die Antwort auf `409 DUPLICATE_URL`.
+ *
+ * Seit dem Server-Release v4.15.0 lehnt `POST /research` ein Fundstueck ab,
+ * dessen URL schon an einem nicht archivierten Fundstueck desselben Buchs
+ * haengt. Fuer diese Erweiterung ist das kein Fehler: zwei Zitate aus derselben
+ * Seite sind zwei Funde, und genau so verhaelt sich `POST /capture` — der Weg
+ * erster Wahl. Der Nutzer hat die Seite trotz des Dubletten-Hinweises im Popup
+ * erfasst; also wird einmal mit `allow_duplicate: true` nachgesendet.
+ *
+ * Das Feld geht NUR im zweiten Anlauf mit: ein Server, der `DUPLICATE_URL`
+ * sendet, kennt es per Vertrag; einem aelteren wird es nie gezeigt.
+ *
+ * @param {Record<string, any>} payload
+ * @param {RunContext} ctx
+ */
+async function createResearchItem(payload, ctx) {
+  const { api, log = () => {} } = ctx;
+  try {
+    return await api.createResearchItem(payload);
   } catch (error) {
     const err = /** @type {any} */ (error);
-    if (isRouteMissing(err)) {
-      log('capture-endpoint-missing');
-      if (onCapabilityMissing) onCapabilityMissing('capture');
-      return false; // auf den Vier-Request-Pfad zurueckfallen
-    }
-    throw error;
+    if (err.code !== 'DUPLICATE_URL') throw error;
+    log('research-duplicate-url', {
+      existingId: err.params?.existing_id ?? null,
+    });
+    return api.createResearchItem({ ...payload, allow_duplicate: true });
   }
 }
 
@@ -425,6 +507,7 @@ async function uploadAttachments(job, ctx) {
     await api.uploadResearchImage(progress.researchItemId, data, contentType || 'image/jpeg');
     progress.imageUploaded = true;
     log('image-uploaded', { id: progress.researchItemId });
+    await checkpoint(ctx, progress);
   }
 
   if (attachments.pdf && !progress.pdfUploaded) {
@@ -440,6 +523,7 @@ async function uploadAttachments(job, ctx) {
       progress.pdfUploaded = true;
       log('research-doc-uploaded', { researchItemId: progress.researchItemId });
     }
+    if (progress.pdfUploaded) await checkpoint(ctx, progress);
   }
 }
 
